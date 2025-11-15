@@ -2,7 +2,7 @@
 # GENERAL SETTINGS
 # -------------------
 DEBUG_PRINT = True
-CARLA_INSTALLATION_PATH = "PATH TO CARLA"
+CARLA_INSTALLATION_PATH = "/home/davide/CARLA_0.9.15"
 CARLA_GLASS_PATH = "CarlaUE4/Content/Carla/Static/Car/GeneralMaterials/Glass.uasset"
 ASSET_PATH = "assets"
 # -------------------

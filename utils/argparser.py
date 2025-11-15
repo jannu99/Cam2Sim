@@ -23,7 +23,7 @@ def parse_map_args():
     parser.add_argument("--dist", type=int, default=250, help="Distance in meters around the address to fetch the map data")
     parser.add_argument("--no_carla", action='store_true', default=False, help="Disables conversion to .xodr file for Carla (which carla is required for)")
     parser.add_argument("--skip_fetch", action='store_true', default=False, help="Skips the osm File fetch (only works if it already exists)")
-
+    parser.add_argument("--mode", choices=["manual", "all", "clusters"], default="manual", help="manual = usa GUI, all = genera tutti i segmenti automaticamente")
     args = parser.parse_args()
     return args
 

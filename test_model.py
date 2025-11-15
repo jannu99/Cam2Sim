@@ -19,6 +19,7 @@ from utils.stable_diffusion import load_stable_diffusion_pipeline, generate_imag
 from utils.distortion import compute_intrinsic_matrix, simulate_distortion_from_pinhole
 import torchvision.transforms as transforms
 
+
 from utils.yolo import calculate_yolo_image, load_yolo_model
 
 args = parse_testing_args()
@@ -95,8 +96,9 @@ vehicle_library = [bp for bp in blueprint_library.filter('*vehicle*') if (bp.has
 #vehicle_library = blueprint_library.filter("vehicle.mini.cooper_s")
 # remove blacklisted and all motorcycles from vehicle_library
 
+
 spawn_parked_cars(world, vehicle_library, map_data["vehicle_data"]["spawn_positions"], translation_vector, rotation_matrix)
-spawn_additional_vehicles(world, vehicle_library, args.other_vehicles)
+#spawn_additional_vehicles(world, vehicle_library, args.other_vehicles)
 
 print(model_data["camera"]["original_size"]["x"], model_data["camera"]["original_size"]["y"])
 seg_sensor_bp = get_sensor_blueprint(blueprint_library,'sensor.camera.semantic_segmentation',model_data["camera"]["original_size"]["x"], model_data["camera"]["original_size"]["y"], model_data["camera"]["fov"])
@@ -227,4 +229,4 @@ finally:
     remove_sensor(depth_sensor)
     remove_sensor(rgb_sensor)
     update_synchronous_mode(world, tm, False)
-    delete_all_vehicles(world)
+    #delete_all_vehicles(world)

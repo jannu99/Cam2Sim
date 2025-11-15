@@ -6,6 +6,8 @@ import math
 import numpy as np
 from PIL import Image
 
+import random
+# from create_vehicle_data_from_centroids import odom_xy_to_latlon  # se è in un file diverso, dimmelo e te lo sistemo
 from config import VERTEX_DISTANCE, MAX_ROAD_LENGTH, WALL_HEIGHT, EXTRA_WIDTH, ROTATION_DEGREES, CAR_SPACING, \
     FORWARDS_PARKING_PROBABILITY
 
@@ -172,3 +174,4 @@ def spawn_parked_cars(world, vehicle_library, spawn_positions, translation_vecto
                 #print(f"✅ Parked car at ({x:.1f}, {y:.1f}) heading {heading:.1f}°")
             except RuntimeError as e:
                 print(f"❌ Could not spawn car at ({x:.1f}, {y:.1f}): {e}")
+
