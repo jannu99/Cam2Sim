@@ -130,7 +130,7 @@ def get_transform_position(pos, translation_vector, rotation_matrix):
 
 def spawn_parked_cars(world, vehicle_library, spawn_positions, translation_vector, rotation_matrix):
     for entry in spawn_positions:
-
+        car_id=entry["cluster_id"]
         start = get_transform_position(entry["start"], translation_vector, rotation_matrix)
         end = get_transform_position(entry["end"], translation_vector, rotation_matrix)
         heading = (entry["heading"] + ROTATION_DEGREES) % 360
@@ -159,7 +159,8 @@ def spawn_parked_cars(world, vehicle_library, spawn_positions, translation_vecto
             z = start[2] if len(start) > 2 else 0.0
 
             veh_heading = heading
-            if entry["mode"] == "perpendicular" and random.random() < ( FORWARDS_PARKING_PROBABILITY / 100 ):
+            print(entry["mode"] )
+            if entry["mode"].strip() == "perpendicular" and random.random() < ( 50 / 100 ):
                 veh_heading = (veh_heading + 180) % 360
 
             location = carla.Location(x=x, y=y, z=z)
@@ -173,5 +174,5 @@ def spawn_parked_cars(world, vehicle_library, spawn_positions, translation_vecto
                 actor.set_target_angular_velocity(carla.Vector3D(0, 0, 0))
                 #print(f"✅ Parked car at ({x:.1f}, {y:.1f}) heading {heading:.1f}°")
             except RuntimeError as e:
-                print(f"❌ Could not spawn car at ({x:.1f}, {y:.1f}): {e}")
+                print(f"❌ Could not spawn car: ({car_id:.1f}) at ({x:.1f}, {y:.1f}): {e}")
 

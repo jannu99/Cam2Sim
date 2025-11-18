@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
 import json
 import argparse
-import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -11,28 +9,9 @@ import numpy as np
 def draw_car_rectangle(ax, cx, cy, yaw_deg, half_length=2.3, half_width=1.0, **kwargs):
     """
     Draw an oriented car rectangle centered at (cx, cy) with yaw in degrees.
-    half_length, half_width are half-extents in 'meters' (same units as your coords).
+    (Funzione disabilitata: non viene più usata per semplificare il plot come richiesto)
     """
-    yaw = math.radians(yaw_deg)
-
-    # Local corners (car frame): +x forward, +y left (convention similar to CARLA)
-    corners_local = np.array([
-        [ half_length,  half_width],
-        [ half_length, -half_width],
-        [-half_length, -half_width],
-        [-half_length,  half_width],
-        [ half_length,  half_width],  # close polygon
-    ])
-
-    c, s = math.cos(yaw), math.sin(yaw)
-    rot = np.array([[c, -s],
-                    [s,  c]])
-
-    corners_world = (rot @ corners_local.T).T
-    corners_world[:, 0] += cx
-    corners_world[:, 1] += cy
-
-    ax.plot(corners_world[:, 0], corners_world[:, 1], **kwargs)
+    pass  # Disabilitata per semplificare il plot
 
 
 def main():
@@ -41,7 +20,7 @@ def main():
     )
     parser.add_argument(
         "--vehicle_json",
-        default="maps/guerickestrae_alte_heide_munich_25_11_16/vehicle_data.json",
+        default="maps/guerickestrae_alte_heide_munich_25_11_18/vehicle_data.json",
         help="Path to vehicle_data.json",
     )
     parser.add_argument(
@@ -81,7 +60,7 @@ def main():
     # Limit number of spots if requested
     n_to_plot = len(spawn_positions) if args.max_spots < 0 else min(args.max_spots, len(spawn_positions))
 
-    fig, ax = plt.subplots(figsize=(8, 8))
+    fig, ax = plt.subplots(figsize=(10, 10))
 
     xs_all = []
     ys_all = []
@@ -91,48 +70,68 @@ def main():
             print(f"[WARN] spawn_positions[{i}] missing keys, skipping.")
             continue
 
+        # cluster_id (può arrivare come float da JSON → cast a int)
+        car_id_raw = sp.get("cluster_id", i)
+        if isinstance(car_id_raw, (float, np.floating)):
+            car_id = int(car_id_raw)
+        else:
+            car_id = car_id_raw
+
         x0, y0, _ = sp["start"]
-        x1, y1, _ = sp["end"]
-        yaw = float(sp["heading"])
+        # x1, y1, _ = sp["end"]  # non ci serve più per il centro
+
         side = sp.get("side", "unknown")
+        mode = sp.get("mode", "parallel")
 
-        # Collect for autoscaling later
-        xs_all += [x0, x1]
-        ys_all += [y0, y1]
+        # 🔴 QUI LA DIFFERENZA IMPORTANTE:
+        # con la nuova build_spawn_positions_from_centroids
+        # la macchina viene spawnata esattamente in 'start'
+        cx = float(x0)
+        cy = float(y0)
 
-        color = "tab:blue" if side == "right" else ("tab:orange" if side == "left" else "gray")
+        xs_all.append(cx)
+        ys_all.append(cy)
 
-        # 1) Draw segment (parking line)
-        ax.plot([x0, x1], [y0, y1], "-", color=color, linewidth=1.5, alpha=0.8)
+        # Colori: rosso = left, blu = right (come prima)
+        if side == "right":
+            color = "tab:blue"
+        elif side == "left":
+            color = "tab:red"
+        else:
+            color = "gray"
 
-        # 2) Draw car rectangle on midpoint
-        mid_x = 0.5 * (x0 + x1)
-        mid_y = 0.5 * (y0 + y1)
+        # Marker diverso per parallel / perpendicular (opzionale ma utile)
+        if mode == "perpendicular":
+            marker = "s"  # square
+        else:
+            marker = "o"  # circle
 
-        draw_car_rectangle(
-            ax,
-            mid_x,
-            mid_y,
-            yaw_deg=yaw,
-            half_length=2.3,
-            half_width=1.0,
+        # Punto centrale del veicolo (posizione dove CARLA prova a spawnàre)
+        ax.plot(
+            [cx],
+            [cy],
+            marker=marker,
+            markersize=6,
+            linestyle='',
             color=color,
-            linewidth=0.8,
+            zorder=5,
+            alpha=0.8
         )
 
-        # Optionally label first few to inspect
-        if i < 10:
-            ax.text(
-                mid_x,
-                mid_y,
-                str(i),
-                fontsize=8,
-                ha="center",
-                va="center",
-                color="black",
-            )
+        # Etichetta con l'ID del cluster sopra il punto
+        ax.text(
+            cx,
+            cy + 0.5,
+            str(car_id),
+            fontsize=9,
+            ha="center",
+            va="bottom",
+            color="black",
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1),
+            zorder=10
+        )
 
-    # --- Draw hero car if requested ---
+    # --- Hero car (rimane com'era) ---
     if args.show_hero and hero_car is not None and "position" in hero_car and "heading" in hero_car:
         hx, hy, hz = hero_car["position"]
         hyaw = float(hero_car["heading"])
@@ -140,8 +139,6 @@ def main():
         xs_all.append(hx)
         ys_all.append(hy)
 
-        # Hero marker
-        ax.scatter([hx], [hy], marker="x", s=60, color="red", label="HERO pose")
         draw_car_rectangle(
             ax,
             hx,
@@ -150,9 +147,10 @@ def main():
             half_length=2.3,
             half_width=1.0,
             color="red",
-            linewidth=1.2,
+            linewidth=1.5,
+            linestyle='-'
         )
-        ax.text(hx, hy, "HERO", color="red", fontsize=9, ha="left", va="bottom")
+        ax.text(hx, hy, "HERO", color="red", fontsize=9, ha="left", va="bottom", zorder=10)
         print(f"[INFO] Hero car at ({hx:.2f}, {hy:.2f}), yaw={hyaw:.2f} deg")
     elif args.show_hero:
         print("[INFO] show_hero=True but hero_car not present or missing fields.")
@@ -171,15 +169,17 @@ def main():
     ax.grid(True, alpha=0.3)
     ax.set_xlabel("X (CARLA world units)")
     ax.set_ylabel("Y (CARLA world units)")
-    ax.set_title("Vehicle spawn positions from vehicle_data.json")
+    ax.set_title("Vehicle Spawn Positions (Simplified Point View)")
 
-    # Legend for sides
+    # Legend per i lati + mode
     handles = [
-        plt.Line2D([0], [0], color="tab:blue", label="Right side"),
-        plt.Line2D([0], [0], color="tab:orange", label="Left side"),
+        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='tab:red', markersize=8, label="Left side (parallel)"),
+        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='tab:blue', markersize=8, label="Right side (parallel)"),
+        plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='tab:red', markersize=8, label="Left side (perp)"),
+        plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='tab:blue', markersize=8, label="Right side (perp)"),
     ]
     if args.show_hero and hero_car is not None:
-        handles.append(plt.Line2D([0], [0], color="red", label="Hero"))
+        handles.append(plt.Line2D([0], [0], color="red", linewidth=1.5, linestyle='-', label="Hero Car"))
     ax.legend(handles=handles, loc="best")
 
     if args.save:
