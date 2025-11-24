@@ -176,3 +176,55 @@ def spawn_parked_cars(world, vehicle_library, spawn_positions, translation_vecto
             except RuntimeError as e:
                 print(f"❌ Could not spawn car: ({car_id:.1f}) at ({x:.1f}, {y:.1f}): {e}")
 
+def spawn_parked_cars2(world, vehicle_library, spawn_positions, translation_vector, rotation_matrix):
+    # Dictionary to store the mapping: { CARLA_ACTOR_ID : REAL_WORLD_CLUSTER_ID }
+    id_mapping = {} 
+
+    for entry in spawn_positions:
+        car_id = entry["cluster_id"] # This is your ID from YOLO (Real World)
+        start = get_transform_position(entry["start"], translation_vector, rotation_matrix)
+        end = get_transform_position(entry["end"], translation_vector, rotation_matrix)
+        heading = (entry["heading"] + ROTATION_DEGREES) % 360
+
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.sqrt(dx ** 2 + dy ** 2)
+
+        if length < 0.1:
+            continue
+
+        ux, uy = dx / length, dy / length
+        num_cars = int(length // CAR_SPACING)
+
+        if num_cars == 0:
+            continue
+
+        for i in range(num_cars):
+            blueprint = random.choice(vehicle_library)
+            
+            x = start[0] + i * CAR_SPACING * ux
+            y = start[1] + i * CAR_SPACING * uy
+            z = start[2] if len(start) > 2 else 0.0
+
+            veh_heading = heading
+            if entry["mode"].strip() == "perpendicular" and random.random() < ( 50 / 100 ):
+                veh_heading = (veh_heading + 180) % 360
+
+            location = carla.Location(x=x, y=y, z=z)
+            rotation = carla.Rotation(yaw=veh_heading)
+            transform = carla.Transform(location, rotation)
+
+            try:
+                actor = world.spawn_actor(blueprint, transform)
+                actor.set_simulate_physics(False)
+                actor.set_target_velocity(carla.Vector3D(0, 0, 0))
+                actor.set_target_angular_velocity(carla.Vector3D(0, 0, 0))
+                
+                # --- THE HANDSHAKE ---
+                # Record that this CARLA Actor ID corresponds to that Real World Cluster ID
+                id_mapping[actor.id] = car_id
+                
+            except RuntimeError as e:
+                print(f"❌ Could not spawn car: ({car_id:.1f}) at ({x:.1f}, {y:.1f}): {e}")
+    
+    return id_mapping
