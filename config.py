@@ -2,7 +2,7 @@
 # GENERAL SETTINGS
 # -------------------
 DEBUG_PRINT = True
-CARLA_INSTALLATION_PATH = "/home/davide/CARLA_0.9.15"
+CARLA_INSTALLATION_PATH = "/media/davide/New Volume/CARLA_0.9.15"
 CARLA_GLASS_PATH = "CarlaUE4/Content/Carla/Static/Car/GeneralMaterials/Glass.uasset"
 ASSET_PATH = "assets"
 # -------------------
@@ -10,7 +10,7 @@ ASSET_PATH = "assets"
 # -------------------
 
 HERO_CAR_OFFSET_METERS = 2.0 #2.0
-SPAWN_OFFSET_METERS = 5.0 #5.5
+SPAWN_OFFSET_METERS = 7.0 #5.5
 CLICK_DISTANCE_THRESHOLD = 0.0001  # ~11m
 MAPS_FOLDER_NAME = "maps"
 

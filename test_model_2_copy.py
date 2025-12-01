@@ -18,10 +18,10 @@ from utils.carla_simulator import update_synchronous_mode, remap_segmentation_co
 from utils.pygame_helper import combine_images, setup_pygame, setup_sensor, get_sensor_blueprint, \
     show_image
 from utils.save_data import create_dotenv, get_map_data, create_output_folders, get_model_data, save_arguments
-from utils.dave2_connection import connect_to_dave2_server, send_image_over_connection
 from utils.stable_diffusion import load_stable_diffusion_pipeline, generate_image
 from utils.distortion import compute_intrinsic_matrix, simulate_distortion_from_pinhole
 from utils.yolo import calculate_yolo_image, load_yolo_model
+#from utils.dave2 import Dave2Model
 
 # === NUOVA FUNZIONE DI UTILITÀ (Genera la Mappa Hash/ID) ===
 def generate_instance_hash_image(inst_array_3ch):
@@ -101,7 +101,7 @@ update_synchronous_mode(world, tm, True, model_data["camera"]["fps"])
 # 1. SPAWN HERO
 vehicle_bp = blueprint_library.find(HERO_VEHICLE_TYPE)
 vehicle = world.spawn_actor(vehicle_bp, starting_position)
-#vehicle.set_autopilot(True)
+vehicle.set_autopilot(True)
 
 # 2. SPAWN SENSORS
 sensor_spawn_point = carla.Transform(carla.Location(x=model_data["camera"]["position"]["x"], y=model_data["camera"]["position"]["y"], z=model_data["camera"]["position"]["z"]), carla.Rotation(pitch=0.0))
@@ -152,13 +152,13 @@ if not args.no_save:
     instance_dir = os.path.join(output_dir, "instance")
     os.makedirs(flow_dir, exist_ok=True)
     os.makedirs(instance_dir, exist_ok=True)
-dave2_conn = None
+
 if not args.only_carla:
     pipe = load_stable_diffusion_pipeline(args.model, model_data)
     prev_image = map_data["starting_image"]
     yolo_model = load_yolo_model()
 
-dave2_conn = connect_to_dave2_server()
+#dave2_model = Dave2Model("/home/davide/catkin_ws/src/ROS-small-scale-vehicle/mixed_reality/nodes/ads/final.h5")
 
 image_transforms = transforms.Compose([transforms.Resize(model_data["size"]["x"], interpolation=transforms.InterpolationMode.BILINEAR), transforms.CenterCrop(model_data["size"]["x"])])
 instance_transforms = transforms.Compose([transforms.Resize(model_data["size"]["x"], interpolation=transforms.InterpolationMode.NEAREST), transforms.CenterCrop(model_data["size"]["x"])])
@@ -257,33 +257,11 @@ try:
         final_depth = image_transforms(ImageOps.invert(Image.fromarray(depth_image_np)))
 
         combined = final_rgb
-        steering_image = final_rgb
         if not args.only_carla:
             generated_image = generate_image(pipe, final_seg, model_data, prev_image, split = 30, guidance = 3.5, set_seed = True, rotate = False)
             prev_image = generated_image
             _, yolo_image = calculate_yolo_image(yolo_model, generated_image)
             combined = combine_images(final_rgb, yolo_image)
-            steering_image = generated_image
-
-        steering, throttle = send_image_over_connection(dave2_conn, steering_image)
-        prev_steer = steering
-
-        steering = prev_steer * 0.8 + steering * (1.0 - 0.8)
-
-            #steering, throttle = calculate_dave2_image(dave2_model, generated_image)
-        print(f"Steering: {steering}, SteeringRad: {np.radians(steering)}, Throttle: {throttle}")
-        steering_rad = np.radians(steering)
-        ackermann_control = carla.VehicleAckermannControl()
-        ackermann_control.speed = float(12 / 3.6)   # Zielgeschwindigkeit in m/s
-        ackermann_control.steer = float(steering * -1.0)
-        ackermann_control.steer_speed = 0.0
-        ackermann_control.acceleration = 0.0
-        ackermann_control.jerk = 0.0
-            
-            #print(ackermann_control)
-        vehicle.apply_ackermann_control(ackermann_control)
-
-
 
         if not args.no_save:
             final_seg.save(os.path.join(output_dir, "seg", '%06d.png' % frame))

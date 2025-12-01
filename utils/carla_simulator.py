@@ -176,55 +176,85 @@ def spawn_parked_cars(world, vehicle_library, spawn_positions, translation_vecto
             except RuntimeError as e:
                 print(f"❌ Could not spawn car: ({car_id:.1f}) at ({x:.1f}, {y:.1f}): {e}")
 
-def spawn_parked_cars2(world, vehicle_library, spawn_positions, translation_vector, rotation_matrix):
-    # Dictionary to store the mapping: { CARLA_ACTOR_ID : REAL_WORLD_CLUSTER_ID }
-    id_mapping = {} 
+import carla
+import random
+import math
 
+def spawn_parked_cars2(world, vehicle_library, spawn_positions, translation_vector, rotation_matrix):
+    spawned_actors = [] 
+    color_mapping = {} # Key: Actor ID (int), Value: Color [R, G, B]
+    print("trzing for ")
+    print(  len(spawn_positions))
     for entry in spawn_positions:
-        car_id = entry["cluster_id"] # This is your ID from YOLO (Real World)
+        print("1")
+        # 1. Extract color from JSON
+        target_color = None
+        if "color" in entry and entry["color"]:
+            try:
+                target_color = [int(x) for x in entry["color"].split(',')]
+            except:
+                pass
+        print("2")
+        
+        # Default to a standard grey if no color specified
+        if target_color is None:
+            target_color = [128, 128, 128]
+
+        # Standard Transform math...
         start = get_transform_position(entry["start"], translation_vector, rotation_matrix)
         end = get_transform_position(entry["end"], translation_vector, rotation_matrix)
         heading = (entry["heading"] + ROTATION_DEGREES) % 360
 
         dx = end[0] - start[0]
         dy = end[1] - start[1]
-        length = math.sqrt(dx ** 2 + dy ** 2)
+        #length = math.sqrt(dx ** 2 + dy ** 2)
+        length = 1
 
-        if length < 0.1:
-            continue
+        print("3")
+
+        if length < 1: continue
 
         ux, uy = dx / length, dy / length
-        num_cars = int(length // CAR_SPACING)
+        num_cars = 1
 
-        if num_cars == 0:
-            continue
+        if num_cars == 0: continue
+
+        print("4")
 
         for i in range(num_cars):
             blueprint = random.choice(vehicle_library)
             
+            # --- CRITICAL STEP 1: Set Visual Color on the Car ---
+            if blueprint.has_attribute('color'):
+                # CARLA expects "255,0,0" string format
+                color_str = f"{target_color[0]},{target_color[1]},{target_color[2]}"
+                blueprint.set_attribute('color', color_str)
+
+            # Calculation of position
             x = start[0] + i * CAR_SPACING * ux
             y = start[1] + i * CAR_SPACING * uy
             z = start[2] if len(start) > 2 else 0.0
 
             veh_heading = heading
-            if entry["mode"].strip() == "perpendicular" and random.random() < ( 50 / 100 ):
+            if entry["mode"].strip() == "perpendicular" and random.random() < 0.5:
                 veh_heading = (veh_heading + 180) % 360
 
-            location = carla.Location(x=x, y=y, z=z)
-            rotation = carla.Rotation(yaw=veh_heading)
-            transform = carla.Transform(location, rotation)
+            transform = carla.Transform(
+                carla.Location(x=x, y=y, z=z), 
+                carla.Rotation(yaw=veh_heading)
+            )
 
             try:
                 actor = world.spawn_actor(blueprint, transform)
                 actor.set_simulate_physics(False)
-                actor.set_target_velocity(carla.Vector3D(0, 0, 0))
-                actor.set_target_angular_velocity(carla.Vector3D(0, 0, 0))
+                print(f"Spawned Car")
                 
-                # --- THE HANDSHAKE ---
-                # Record that this CARLA Actor ID corresponds to that Real World Cluster ID
-                id_mapping[actor.id] = car_id
+                spawned_actors.append(actor)
+                
+                # --- CRITICAL STEP 2: Save the ID and Color for the Instance Map ---
+                color_mapping[actor.id] = target_color
                 
             except RuntimeError as e:
-                print(f"❌ Could not spawn car: ({car_id:.1f}) at ({x:.1f}, {y:.1f}): {e}")
+                print(f"❌ Could not spawn car: {e}")
     
-    return id_mapping
+    return spawned_actors, color_mapping

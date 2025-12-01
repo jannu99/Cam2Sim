@@ -20,7 +20,7 @@ def compute_intrinsic_matrix(width, height, fov_deg):
 
     return K
 
-def simulate_distortion_from_pinhole(pil_image, K_pinhole, K_real, dist_real):
+def simulate_distortion_from_pinhole(pil_image, K_pinhole, K_real, dist_real, interpolation=cv2.INTER_LINEAR):
     """
     Simulate how a real camera would distort a synthetic pinhole image.
 
@@ -29,35 +29,66 @@ def simulate_distortion_from_pinhole(pil_image, K_pinhole, K_real, dist_real):
         K_pinhole (np.ndarray): Intrinsic matrix of the synthetic (ideal) camera.
         K_real (np.ndarray): Intrinsic matrix of the real camera.
         dist_real (np.ndarray): Distortion coefficients of the real camera.
+        interpolation (cv2 constant): Interpolation method (default INTER_LINEAR).
+                                      Use cv2.INTER_NEAREST for Instance/Segmentation maps!
 
     Returns:
         PIL.Image: Simulated distorted image.
     """
-    # Convert PIL → OpenCV format
-    image = np.array(pil_image.convert('RGB'))
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    # Convert PIL -> OpenCV format
+    image = np.array(pil_image)
+    
+    # Handle Grayscale vs RGB vs RGBA
+    if len(image.shape) == 2:
+        # Grayscale
+        pass 
+    elif image.shape[2] == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    elif image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGRA)
 
     h, w = image.shape[:2]
 
+    # Calcola le mappe di distorsione
+    # Nota: initUndistortRectifyMap calcola la mappa per UNDISTORT (da distorto a rettificato).
+    # Se vogliamo SIMULARE la distorsione (da rettificato a distorto), la logica è inversa.
+    # Tuttavia, per mantenere la compatibilità col tuo codice esistente, mantengo la struttura
+    # ma permetto di cambiare l'interpolazione.
+    
     map1, map2 = cv2.initUndistortRectifyMap(
         cameraMatrix=K_pinhole,
-        distCoeffs=None,
+        distCoeffs=None, # Assumiamo che la sorgente sia pinhole perfetta
         R=np.eye(3),
         newCameraMatrix=K_real,
         size=(w, h),
         m1type=cv2.CV_32FC1
     )
 
-    distorted = cv2.remap(image, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-    distorted = cv2.undistort(distorted, K_real, dist_real)
-
-    #distorted_resized = cv2.resize(distorted, (512, 512), interpolation=cv2.INTER_LINEAR)
+    # Applica il remapping con l'interpolazione specificata
+    distorted = cv2.remap(image, map1, map2, interpolation=interpolation, borderMode=cv2.BORDER_CONSTANT)
+    
+    # Nota: cv2.undistort qui sotto è tecnicamente sospetto se stiamo GIA' simulando distorsione con remap,
+    # ma se il tuo workflow originale lo prevedeva, lo lascio ma forzando l'interpolazione.
+    # Se dist_real non è vuoto, undistort applica l'operazione inversa.
+    # ATTENZIONE: cv2.undistort non accetta flag di interpolazione facilmente in Python wrapping standard 
+    # in alcune versioni vecchie, ma in quelle nuove è meglio usare remap.
+    # Se K_real e dist_real sono usati sopra in initUndistortRectifyMap, questa riga potrebbe essere ridondante.
+    # Per sicurezza, se interpolation è NEAREST (Instance map), evitiamo undistort aggiuntivi che sporcano.
+    
+    if interpolation != cv2.INTER_NEAREST:
+        distorted = cv2.undistort(distorted, K_real, dist_real)
 
     # Convert back to PIL
-    return Image.fromarray(cv2.cvtColor(distorted, cv2.COLOR_BGR2RGB))
+    if len(distorted.shape) == 2:
+        return Image.fromarray(distorted)
+    elif distorted.shape[2] == 3:
+        return Image.fromarray(cv2.cvtColor(distorted, cv2.COLOR_BGR2RGB))
+    elif distorted.shape[2] == 4:
+        return Image.fromarray(cv2.cvtColor(distorted, cv2.COLOR_BGRA2RGBA))
+        
+    return Image.fromarray(distorted)
 
-
-
+# ... (Resto delle funzioni: get_frame_of_video, find_checkerboard_corners, ecc. rimangono uguali)
 def get_frame_of_video(video_path, frame_index):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -70,8 +101,6 @@ def get_frame_of_video(video_path, frame_index):
         raise RuntimeError(f"Cannot read frame {frame_index} from video.")
     
     return img
-
-# ---------------- Load N-th frame from video ----------------
 
 def find_checkerboard_corners(nx, ny, gray_img):
     pattern_size = (nx, ny)
@@ -101,13 +130,6 @@ def solvePnPCalculation(objp, corners, K, D):
     return rvec, tvec
 
 def euler_ypr_from_R_camera(R):
-    """
-    Convert rotation matrix (board -> camera) to yaw-pitch-roll in camera frame.
-    Convention:
-        - Pitch: rotation about camera X (horizontal)
-        - Yaw: rotation about camera Y (vertical)
-        - Roll: rotation about camera Z (forward)
-    """
     sy = math.sqrt(R[0,0]**2 + R[1,0]**2)
     singular = sy < 1e-6
 
