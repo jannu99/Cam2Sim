@@ -11,10 +11,13 @@ def parse_dataset_args():
     parser.add_argument("--canny", action='store_true', default=False, help="Creates Canny edge detection images from the video frames")
     parser.add_argument("--blur", action='store_true', default=False, help="Blurs faces in the video frames")
     parser.add_argument("--override", action='store_true', default=False, help="Forces to skip the Frame generation and use existing frames")
+    
+    # --- NEW ARGUMENTS ---
+    parser.add_argument("--map", type=str, help="Name of the map folder (inside maps/) to use for coordinate alignment")
+    parser.add_argument("--frames", type=str, help="Path to the positions file (e.g. positions.txt)")
 
     args = parser.parse_args()
     return args
-
 
 def parse_map_args():
     parser = argparse.ArgumentParser(description="Arguments for creating a map from an address")
