@@ -258,3 +258,132 @@ def spawn_parked_cars2(world, vehicle_library, spawn_positions, translation_vect
                 print(f"❌ Could not spawn car: {e}")
     
     return spawned_actors, color_mapping
+
+def spawn_parked_cars_and_map(world, vehicle_library, spawn_positions, translation_vector, rotation_matrix):
+    """
+    1. Spawns car at parking spot (checks collision).
+    2. Teleports to Sky -> Scans ID -> Maps to JSON Color.
+    3. Teleports back to parking spot.
+    """
+    spawned_actors = [] 
+    color_mapping = {} # The Result: { InstanceID : [R, G, B] }
+    CAR_SPACING = 5.0
+
+    print(f"🔄 Processing {len(spawn_positions)} parking entries with Sky-Scanner...")
+
+    # --- SETUP SCANNER (ISOLATION BOOTH) ---
+    # We place a camera high up in the sky (Z=500) looking down
+    bp_lib = world.get_blueprint_library()
+    scanner_bp = bp_lib.find('sensor.camera.instance_segmentation')
+    scanner_bp.set_attribute('image_size_x', '100')
+    scanner_bp.set_attribute('image_size_y', '100')
+    scanner_bp.set_attribute('fov', '90')
+    scanner_bp.set_attribute('sensor_tick', '0.0')
+
+    # Isolation coordinates
+    ISO_X, ISO_Y, ISO_Z = 0, 0, 500
+    
+    # Spawn Camera 5m above the isolation point
+    scanner_sensor = world.spawn_actor(scanner_bp, carla.Transform(
+        carla.Location(x=ISO_X, y=ISO_Y, z=ISO_Z + 5.0),
+        carla.Rotation(pitch=-90)
+    ))
+    
+    scanner_queue = queue.Queue()
+    scanner_sensor.listen(scanner_queue.put)
+
+    try:
+        for entry in spawn_positions:
+            # 1. Parse JSON Color
+            target_color = [128, 128, 128] # Default
+            if "color" in entry and entry["color"]:
+                try:
+                    target_color = [int(x) for x in entry["color"].split(',')]
+                except:
+                    pass
+
+            # 2. Calculate Parking Transform
+            start = get_transform_position(entry["start"], translation_vector, rotation_matrix)
+            end = get_transform_position(entry["end"], translation_vector, rotation_matrix)
+            heading = (entry["heading"] + ROTATION_DEGREES) % 360
+
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            dist = math.sqrt(dx**2 + dy**2)
+            length = dist if dist > 0 else 1 
+
+            if length < 1: continue
+
+            ux, uy = dx / length, dy / length
+            
+            # Logic for number of cars (simplified from your code)
+            num_cars = 1 
+
+            for i in range(num_cars):
+                blueprint = random.choice(vehicle_library)
+                
+                # Set Visual Color (Visuals only)
+                if blueprint.has_attribute('color'):
+                    blueprint.set_attribute('color', f"{target_color[0]},{target_color[1]},{target_color[2]}")
+
+                # Calc Position
+                x = start[0] + i * CAR_SPACING * ux
+                y = start[1] + i * CAR_SPACING * uy
+                z = start[2] if len(start) > 2 else 0.2
+
+                veh_heading = heading
+                if "mode" in entry and entry["mode"].strip() == "perpendicular" and random.random() < 0.5:
+                    veh_heading = (veh_heading + 180) % 360
+
+                parking_transform = carla.Transform(
+                    carla.Location(x=x, y=y, z=z), 
+                    carla.Rotation(yaw=veh_heading)
+                )
+
+                # --- STEP A: TRY SPAWN AT PARKING SPOT ---
+                # We do this first to check for collisions/validity
+                actor = world.try_spawn_actor(blueprint, parking_transform)
+                
+                if actor is None:
+                    # If we can't spawn here, just skip. No harm done.
+                    continue
+                
+                actor.set_simulate_physics(False)
+                spawned_actors.append(actor)
+
+                # --- STEP B: TELEPORT TO SKY (ISOLATION) ---
+                # Move car to x=0, y=0, z=500
+                actor.set_transform(carla.Transform(carla.Location(x=ISO_X, y=ISO_Y, z=ISO_Z), carla.Rotation(yaw=0)))
+                
+                # --- STEP C: SNAPSHOT ---
+                world.tick() # Render frame
+                
+                # Flush queue to get latest image
+                image = None
+                while not scanner_queue.empty():
+                    image = scanner_queue.get()
+                if image is None: image = scanner_queue.get(timeout=2.0)
+
+                # --- STEP D: READ ID ---
+                array = np.frombuffer(image.raw_data, dtype=np.uint8).reshape((100, 100, 4))
+                center = array[45:55, 45:55] # Center crop
+                
+                b = center[:,:,0].astype(np.int32)
+                g = center[:,:,1].astype(np.int32)
+                ids = g + (b << 8)
+                
+                valid_ids = ids[ids > 0]
+                
+                if len(valid_ids) > 0:
+                    detected_id = Counter(valid_ids.flatten()).most_common(1)[0][0]
+                    # MAP IT: This ID = This JSON Color
+                    color_mapping[detected_id] = target_color
+                
+                # --- STEP E: TELEPORT BACK HOME ---
+                actor.set_transform(parking_transform)
+
+    finally:
+        if scanner_sensor: scanner_sensor.destroy()
+        print(f"✅ Calibration Complete. Mapped {len(color_mapping)} vehicles.")
+    
+    return spawned_actors, color_mapping

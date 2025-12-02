@@ -3,10 +3,8 @@ import time
 import os
 import numpy as np
 import cv2
-from collections import Counter
 from PIL import Image, ImageOps 
 import torchvision.transforms as transforms
-import hashlib # Necessario per la funzione hash, anche se usiamo una formula semplice
 
 from dotenv import load_dotenv
 from huggingface_hub import login
@@ -21,48 +19,49 @@ from utils.save_data import create_dotenv, get_map_data, create_output_folders, 
 from utils.stable_diffusion import load_stable_diffusion_pipeline, generate_image
 from utils.distortion import compute_intrinsic_matrix, simulate_distortion_from_pinhole
 from utils.yolo import calculate_yolo_image, load_yolo_model
-#from utils.dave2 import Dave2Model
 
-# === NUOVA FUNZIONE DI UTILITÀ (Genera la Mappa Hash/ID) ===
-def generate_instance_hash_image(inst_array_3ch):
+# ==============================================================================
+#  ⚡ FIXED: MAPPING BASED ON YOUR TABLE (Tags 14, 15, 16, 18)
+# ==============================================================================
+def process_instance_map_fixed(inst_raw_data):
     """
-    Decodifica i bit dell'ID e genera un'immagine colorata con un colore casuale
-    determinato dall'ID (utile per isolare le maschere).
+    Parses CARLA Instance Bitmap.
+    Red Channel = Category Tag.
+    Green/Blue  = Instance ID.
+    
+    Refers to provided Table:
+    14 = Car, 15 = Truck, 16 = Bus, 18 = Motorcycle
     """
-    # Usiamo la formula G + B*256, che produce l'ID (se non l'offset).
-    b, g, r = inst_array_3ch[:,:,0].astype(np.int32), inst_array_3ch[:,:,1].astype(np.int32), inst_array_3ch[:,:,2].astype(np.int32)
-    pixel_ids_map = g + (b << 8)
+    # 1. Convert Raw Buffer to Numpy (BGRA order)
+    bgra = np.frombuffer(inst_raw_data.raw_data, dtype=np.uint8)
+    bgra = bgra.reshape((inst_raw_data.height, inst_raw_data.width, 4))
     
-    # 1. Base Layer: Genera colori hash consistenti per ogni ID
-    r_hash = (pixel_ids_map * 13) % 255
-    g_hash = (pixel_ids_map * 37) % 255
-    b_hash = (pixel_ids_map * 61) % 255
-    hashed_inst = np.dstack((r_hash, g_hash, b_hash)).astype(np.uint8)
-
-    return hashed_inst, pixel_ids_map
-
-# === FUNZIONE CALCOLO MODA (COLORE PIÙ FREQUENTE) ===
-def get_most_frequent_color(pixels):
-    """Calcola la moda (colore più frequente) in un array di pixel RGB."""
-    if len(pixels) == 0:
-        return np.array([0, 0, 0], dtype=np.uint8)
+    # 2. Extract Channels
+    # CARLA images are usually BGRA in memory
+    b_id = bgra[:, :, 0].astype(np.int32) 
+    g_id = bgra[:, :, 1].astype(np.int32)
+    tag  = bgra[:, :, 2] # Red Channel is the Semantic Tag
     
-    # Converte i pixel RGB in un singolo int per contare i valori unici
-    packed = pixels[:, 0] + (pixels[:, 1] << 8) + (pixels[:, 2] << 16)
+    # 3. Create Mask for VEHICLES based on YOUR TABLE
+    # 14: Car, 15: Truck, 16: Bus, 18: Motorcycle
+    # We use np.isin to check against multiple values efficiently
+    vehicle_mask = np.isin(tag, [14, 15, 16, 18])
     
-    # Contatore standard per trovare la moda
-    counts = Counter(packed)
+    # 4. Initialize Output (Black Background)
+    output = np.zeros((inst_raw_data.height, inst_raw_data.width, 3), dtype=np.uint8)
     
-    # Il valore più comune (la moda)
-    most_common_packed = counts.most_common(1)[0][0]
+    # 5. Generate Colors
+    # We scramble G and B to make IDs look distinct
+    out_r = (g_id * 37 + b_id * 13) % 200 + 55
+    out_g = (g_id * 17 + b_id * 43) % 200 + 55
+    out_b = (g_id * 29 + b_id * 53) % 200 + 55
     
-    # Riconverte la moda in RGB (B, G, R)
-    r = (most_common_packed) & 0xFF
-    g = (most_common_packed >> 8) & 0xFF
-    b = (most_common_packed >> 16) & 0xFF
+    # 6. Apply Colors ONLY to Vehicles
+    output[vehicle_mask, 0] = out_r[vehicle_mask]
+    output[vehicle_mask, 1] = out_g[vehicle_mask]
+    output[vehicle_mask, 2] = out_b[vehicle_mask]
     
-    # Numpy array format
-    return np.array([r, g, b], dtype=np.uint8) # Restituisce [R, G, B]
+    return Image.fromarray(output)
 
 
 # --- ARGS & SETUP ---
@@ -72,7 +71,7 @@ if not args.only_carla:
     create_dotenv()
     load_dotenv()
     huggingface_token = os.getenv("HF_TOKEN")
-    if huggingthingface_token: login(token=huggingface_token)
+    if huggingface_token: login(token=huggingface_token)
 
 client = carla.Client(args.carla_ip, args.carla_port)
 client.set_timeout(40.0) 
@@ -127,17 +126,13 @@ forbidden_keywords = ["mustang", "police", "impala", "carlacola", "cybertruck", 
 for bp in all_vehicles:
     if bp.has_attribute('number_of_wheels'):
         if int(bp.get_attribute('number_of_wheels')) != 4: continue
-    # 3. NEW CHECK: Filter for Generation 1 only
     if bp.has_attribute('generation'):
-        if int(bp.get_attribute('generation')) != 1:
-            continue  # Skip if the generation is not 1
+        if int(bp.get_attribute('generation')) != 1: continue
     if any(k in bp.id.lower() for k in forbidden_keywords): continue
     vehicle_library.append(bp)
 
 initial_mapping, color_mapping = spawn_parked_cars2(world, vehicle_library, map_data["vehicle_data"]["spawn_positions"], translation_vector, rotation_matrix)
 color_mapping[vehicle.id] = [255, 255, 255] # Hero car white
-
-print(f"✅ Loaded Color Mapping for {len(color_mapping)} cars.")
 
 spectator = world.get_spectator()
 pygame_screen, pygame_clock = setup_pygame(model_data["size"]["x"], model_data["size"]["y"], args.only_carla)
@@ -157,8 +152,6 @@ if not args.only_carla:
     pipe = load_stable_diffusion_pipeline(args.model, model_data)
     prev_image = map_data["starting_image"]
     yolo_model = load_yolo_model()
-
-#dave2_model = Dave2Model("/home/davide/catkin_ws/src/ROS-small-scale-vehicle/mixed_reality/nodes/ads/final.h5")
 
 image_transforms = transforms.Compose([transforms.Resize(model_data["size"]["x"], interpolation=transforms.InterpolationMode.BILINEAR), transforms.CenterCrop(model_data["size"]["x"])])
 instance_transforms = transforms.Compose([transforms.Resize(model_data["size"]["x"], interpolation=transforms.InterpolationMode.NEAREST), transforms.CenterCrop(model_data["size"]["x"])])
@@ -180,60 +173,14 @@ try:
 
         flow_array = np.frombuffer(flow_data.raw_data, dtype=np.float32).reshape((flow_data.height, flow_data.width, 2))
         
-        # RGB FRAME (Ground Truth for Color)
-        rgb_image_np = np.frombuffer(rgb_data.raw_data, dtype=np.uint8).reshape((rgb_data.height, rgb_data.width, 4))[:,:,:3][:,:,::-1] # RGB Array (H, W, 3)
+        # RGB FRAME
+        rgb_image_np = np.frombuffer(rgb_data.raw_data, dtype=np.uint8).reshape((rgb_data.height, rgb_data.width, 4))[:,:,:3][:,:,::-1]
         rgb_image_pil = Image.fromarray(rgb_image_np)
 
-        # INSTANCE FRAME (IDs to be masked)
-        inst_array = np.frombuffer(inst_data.raw_data, dtype=np.uint8).reshape((inst_data.height, inst_data.width, 4))[:,:,:3] # Only RGB channels
+        # === ⚡ CALLING THE FIXED FUNCTION (TAGS 14-18) ===
+        instance_pil = process_instance_map_fixed(inst_data)
+        # =================================================
 
-        # 1. CREAZIONE MAPPA HASH CASUALE (Usata solo per creare le maschere/ID unici)
-        hashed_inst_np, pixel_ids_map = generate_instance_hash_image(inst_array)
-        
-        # 2. ANALISI DEI COLORI PREDOMINANTI
-        # Identifica tutti i colori/ID unici nella scena
-        unique_colors, counts = np.unique(hashed_inst_np.reshape(-1, 3), axis=0, return_counts=True)
-        
-        # Ordina per frequenza (il primo è lo sfondo)
-        sorted_indices = np.argsort(-counts)
-        predominant_color = unique_colors[sorted_indices[0]] 
-        
-        # Inizializza l'output finale
-        final_colored_inst = np.zeros_like(hashed_inst_np)
-        
-        # 3. MASKING E COLORAZIONE (Moda)
-        for i in sorted_indices:
-            color_hash = unique_colors[i]
-            count = counts[i]
-            
-            # Crea una maschera per ISOLARE tutti i pixel di questo colore/ID
-            is_target_mask = np.all(hashed_inst_np == color_hash, axis=-1)
-            
-            # Logica: 
-            # 1. Se è il colore predominante (strada, cielo) o rumore (< 100 pixel)
-            if np.array_equal(color_hash, predominant_color) or count < 100: 
-                 # Colore predominante/Sfondo deve essere NERO (come richiesto)
-                 final_colored_inst[is_target_mask] = [0, 0, 0] 
-            else:
-                # 2. Questo è un oggetto (un'auto, un palazzo, o un albero)
-                
-                # A. Trova i pixel RGB del frame originale sotto questa maschera
-                original_pixels = rgb_image_np[is_target_mask]
-                
-                # B. Calcola il colore più frequente (MODA)
-                if len(original_pixels) > 0:
-                    true_color_gt = get_most_frequent_color(original_pixels)
-                    
-                    # C. Applica il Colore Più Frequente sulla Maschera
-                    final_colored_inst[is_target_mask] = true_color_gt
-                else:
-                    final_colored_inst[is_target_mask] = [0, 0, 0] # Fallback nero
-                 
-        instance_pil = Image.fromarray(final_colored_inst)
-
-        # ======================================================================
-        #  REST OF PIPELINE
-        # ======================================================================
         seg_data.convert(carla.ColorConverter.CityScapesPalette) 
         seg_image = remap_segmentation_colors(carla_image_to_pil(seg_data))
 
@@ -281,4 +228,5 @@ except KeyboardInterrupt:
 finally:
     if 'seg_sensor' in locals(): remove_sensor(seg_sensor)
     if 'rgb_sensor' in locals(): remove_sensor(rgb_sensor)
+    if 'inst_sensor' in locals(): remove_sensor(inst_sensor)
     update_synchronous_mode(world, tm, False)

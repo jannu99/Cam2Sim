@@ -49,12 +49,14 @@ with open(glass_file_path, 'wb') as f:
 # now run carla using the CarlaUE4.sh script in this terminal
 # if the .sh should crash or finish, print hello world
 try:
-    print("✅ Starting CARLA...")
-    result = subprocess.run([carla_script_path], check=True)
+    print("✅ Starting CARLA with Low Quality...")
+    
+    # ADDED "-quality-level=Low" here
+    result = subprocess.run([carla_script_path, "-quality-level=Low"], check=True)
+    
     print("🏁 CARLA finished with return code:", result.returncode)
 except subprocess.CalledProcessError as e:
     print("⚠️ CARLA script failed with error:", e)
-
 except Exception as e:
         print("⚠️ An unexpected error occurred:", e)
 finally:
