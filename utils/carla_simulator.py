@@ -1,7 +1,8 @@
 import random
 import carla
 import xml.etree.ElementTree as ET
-
+import queue 
+from collections import Counter
 import math
 import numpy as np
 from PIL import Image
@@ -259,131 +260,176 @@ def spawn_parked_cars2(world, vehicle_library, spawn_positions, translation_vect
     
     return spawned_actors, color_mapping
 
-def spawn_parked_cars_and_map(world, vehicle_library, spawn_positions, translation_vector, rotation_matrix):
-    """
-    1. Spawns car at parking spot (checks collision).
-    2. Teleports to Sky -> Scans ID -> Maps to JSON Color.
-    3. Teleports back to parking spot.
-    """
+
+def move_to_real_position(world, vehicle_library, entry, translation_vector, rotation_matrix):
     spawned_actors = [] 
-    color_mapping = {} # The Result: { InstanceID : [R, G, B] }
-    CAR_SPACING = 5.0
+    color_mapping = {} # Key: Actor ID (int), Value: Color [R, G, B]
 
-    print(f"🔄 Processing {len(spawn_positions)} parking entries with Sky-Scanner...")
 
-    # --- SETUP SCANNER (ISOLATION BOOTH) ---
-    # We place a camera high up in the sky (Z=500) looking down
-    bp_lib = world.get_blueprint_library()
-    scanner_bp = bp_lib.find('sensor.camera.instance_segmentation')
-    scanner_bp.set_attribute('image_size_x', '100')
-    scanner_bp.set_attribute('image_size_y', '100')
-    scanner_bp.set_attribute('fov', '90')
-    scanner_bp.set_attribute('sensor_tick', '0.0')
+    # 1. Extract color from JSON
+    target_color = None
+    if "color" in entry and entry["color"]:
+        try:
+            target_color = [int(x) for x in entry["color"].split(',')]
+        except:
+            pass
 
-    # Isolation coordinates
-    ISO_X, ISO_Y, ISO_Z = 0, 0, 500
+    # Default to a standard grey if no color specified
+    if target_color is None:
+        target_color = [128, 128, 128]
+
+    # Standard Transform math...
+    start = get_transform_position(entry["start"], translation_vector, rotation_matrix)
+    end = get_transform_position(entry["end"], translation_vector, rotation_matrix)
+    heading = (entry["heading"] + ROTATION_DEGREES) % 360
+
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    #length = math.sqrt(dx ** 2 + dy ** 2)
+    length = 1
+
+
     
-    # Spawn Camera 5m above the isolation point
-    scanner_sensor = world.spawn_actor(scanner_bp, carla.Transform(
-        carla.Location(x=ISO_X, y=ISO_Y, z=ISO_Z + 5.0),
-        carla.Rotation(pitch=-90)
-    ))
+
+    ux, uy = dx / length, dy / length
+    num_cars = 1
+
     
-    scanner_queue = queue.Queue()
-    scanner_sensor.listen(scanner_queue.put)
+
+
+
+    
+    blueprint = random.choice(vehicle_library)
+    
+    # --- CRITICAL STEP 1: Set Visual Color on the Car ---
+    if blueprint.has_attribute('color'):
+        # CARLA expects "255,0,0" string format
+        color_str = f"{target_color[0]},{target_color[1]},{target_color[2]}"
+        blueprint.set_attribute('color', color_str)
+
+    # Calculation of position
+    x = start[0] 
+    y = start[1] 
+    z = start[2] if len(start) > 2 else 0.0
+
+    veh_heading = heading
+    if entry["mode"].strip() == "perpendicular" and random.random() < 0.5:
+        veh_heading = (veh_heading + 180) % 360
+
+    transform = carla.Transform(
+        carla.Location(x=x, y=y, z=z), 
+        carla.Rotation(yaw=veh_heading)
+    )
+    #INSTED OF SPAWNING THE NEW CAR JUST MOVE THE ONE THAT COMES FROM THE MAIN SCRIPT
+    # try:
+
+    #     #actor = world.spawn_actor(blueprint, transform)
+    #     actor.set_simulate_physics(False)
+    #     print(f"Spawned Car")
+        
+    #     spawned_actors.append(actor)
+        
+    #     # --- CRITICAL STEP 2: Save the ID and Color for the Instance Map ---
+    #     color_mapping[actor.id] = target_color
+        
+    # except RuntimeError as e:
+    #     print(f"❌ Could not spawn car: {e}")
+
+    # return spawned_actors, color_mapping
+
+    
+
+def spawn_parked_cars_front_of_hero(world, vehicle_library, entry, hero_position, translation_vector, rotation_matrix):
+    spawned_actors = [] 
+    color_mapping = {} # Key: Actor ID (int), Value: Color [R, G, B]
+    
+    print(hero_position["position"])
+    # 1. Extract color from JSON
+    target_color = None
+    if "color" in entry and entry["color"]:
+        try:
+            target_color = [int(x) for x in entry["color"].split(',')]
+        except:
+            pass
+    
+    # Default to a standard grey if no color specified
+    if target_color is None:
+        target_color = [128, 128, 128]
+
+
+    # temp_start=hero_position["position"]
+    # offset_pos = [1.0, -2.0, 0.0]
+    # temp_end = [x + y for x, y in zip(temp_start, offset_pos)]
+    # print("spawn temp pos")
+    # print(temp_start) 
+    # print(temp_end)
+    temp_start=[
+    15.420957288852122,
+    -170.21387689825545,
+    0.0
+    ]
+
+    temp_end=[
+    15.421057288852122,
+    -170.21377689825545,
+    0.0
+    ]
+    # Standard Transform math...
+    start = get_transform_position(temp_start, translation_vector, rotation_matrix)
+    end = get_transform_position(temp_end, translation_vector, rotation_matrix)
+
+    heading = (entry["heading"] + ROTATION_DEGREES) % 360
+
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    #length = math.sqrt(dx ** 2 + dy ** 2)
+    length = 1
+
+
+
+
+
+    ux, uy = dx / length, dy / length
+    num_cars = 1
+
+
+
+
+
+    
+    blueprint = random.choice(vehicle_library)
+    
+    # --- CRITICAL STEP 1: Set Visual Color on the Car ---
+    if blueprint.has_attribute('color'):
+        # CARLA expects "255,0,0" string format
+        color_str = f"{target_color[0]},{target_color[1]},{target_color[2]}"
+        blueprint.set_attribute('color', color_str)
+
+    # Calculation of position
+    x = start[0] 
+    y = start[1] 
+    z = start[2] if len(start) > 2 else 0.0
+
+    veh_heading = heading
+    if entry["mode"].strip() == "perpendicular" and random.random() < 0.5:
+        veh_heading = (veh_heading + 180) % 360
+
+    transform = carla.Transform(
+        carla.Location(x=x, y=y, z=z), 
+        carla.Rotation(yaw=veh_heading)
+    )
 
     try:
-        for entry in spawn_positions:
-            # 1. Parse JSON Color
-            target_color = [128, 128, 128] # Default
-            if "color" in entry and entry["color"]:
-                try:
-                    target_color = [int(x) for x in entry["color"].split(',')]
-                except:
-                    pass
+        actor = world.spawn_actor(blueprint, transform)
+        actor.set_simulate_physics(False)
+        print(f"Spawned Car")
+        
+        spawned_actors.append(actor)
+        
+        # --- CRITICAL STEP 2: Save the ID and Color for the Instance Map ---
+        color_mapping[actor.id] = target_color
+        
+    except RuntimeError as e:
+        print(f"❌ Could not spawn car: {e}")
 
-            # 2. Calculate Parking Transform
-            start = get_transform_position(entry["start"], translation_vector, rotation_matrix)
-            end = get_transform_position(entry["end"], translation_vector, rotation_matrix)
-            heading = (entry["heading"] + ROTATION_DEGREES) % 360
-
-            dx = end[0] - start[0]
-            dy = end[1] - start[1]
-            dist = math.sqrt(dx**2 + dy**2)
-            length = dist if dist > 0 else 1 
-
-            if length < 1: continue
-
-            ux, uy = dx / length, dy / length
-            
-            # Logic for number of cars (simplified from your code)
-            num_cars = 1 
-
-            for i in range(num_cars):
-                blueprint = random.choice(vehicle_library)
-                
-                # Set Visual Color (Visuals only)
-                if blueprint.has_attribute('color'):
-                    blueprint.set_attribute('color', f"{target_color[0]},{target_color[1]},{target_color[2]}")
-
-                # Calc Position
-                x = start[0] + i * CAR_SPACING * ux
-                y = start[1] + i * CAR_SPACING * uy
-                z = start[2] if len(start) > 2 else 0.2
-
-                veh_heading = heading
-                if "mode" in entry and entry["mode"].strip() == "perpendicular" and random.random() < 0.5:
-                    veh_heading = (veh_heading + 180) % 360
-
-                parking_transform = carla.Transform(
-                    carla.Location(x=x, y=y, z=z), 
-                    carla.Rotation(yaw=veh_heading)
-                )
-
-                # --- STEP A: TRY SPAWN AT PARKING SPOT ---
-                # We do this first to check for collisions/validity
-                actor = world.try_spawn_actor(blueprint, parking_transform)
-                
-                if actor is None:
-                    # If we can't spawn here, just skip. No harm done.
-                    continue
-                
-                actor.set_simulate_physics(False)
-                spawned_actors.append(actor)
-
-                # --- STEP B: TELEPORT TO SKY (ISOLATION) ---
-                # Move car to x=0, y=0, z=500
-                actor.set_transform(carla.Transform(carla.Location(x=ISO_X, y=ISO_Y, z=ISO_Z), carla.Rotation(yaw=0)))
-                
-                # --- STEP C: SNAPSHOT ---
-                world.tick() # Render frame
-                
-                # Flush queue to get latest image
-                image = None
-                while not scanner_queue.empty():
-                    image = scanner_queue.get()
-                if image is None: image = scanner_queue.get(timeout=2.0)
-
-                # --- STEP D: READ ID ---
-                array = np.frombuffer(image.raw_data, dtype=np.uint8).reshape((100, 100, 4))
-                center = array[45:55, 45:55] # Center crop
-                
-                b = center[:,:,0].astype(np.int32)
-                g = center[:,:,1].astype(np.int32)
-                ids = g + (b << 8)
-                
-                valid_ids = ids[ids > 0]
-                
-                if len(valid_ids) > 0:
-                    detected_id = Counter(valid_ids.flatten()).most_common(1)[0][0]
-                    # MAP IT: This ID = This JSON Color
-                    color_mapping[detected_id] = target_color
-                
-                # --- STEP E: TELEPORT BACK HOME ---
-                actor.set_transform(parking_transform)
-
-    finally:
-        if scanner_sensor: scanner_sensor.destroy()
-        print(f"✅ Calibration Complete. Mapped {len(color_mapping)} vehicles.")
-    
     return spawned_actors, color_mapping
