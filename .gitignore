@@ -2,6 +2,7 @@
 /guericke_dataset/
 /guericke_dataset_2/
 /test-dataset/
+/dataset_output/
 /.idea/
 /.venv/
 /.env

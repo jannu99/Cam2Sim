@@ -1,11 +1,12 @@
 import carla
 import time
 import os
+import json
 import numpy as np
 import cv2
 import random
-import gc # <--- IMPORT GARBAGE COLLECTOR
-import pygame # <--- IMPORT PYGAME FOR EVENT PUMPING
+import gc 
+import pygame 
 from PIL import Image, ImageOps 
 import torchvision.transforms as transforms
 from dotenv import load_dotenv
@@ -19,10 +20,24 @@ from utils.pygame_helper import setup_pygame, setup_sensor, get_sensor_blueprint
     show_image
 from utils.save_data import create_dotenv, get_map_data, create_output_folders, get_model_data, save_arguments
 
-
 # ==============================================================================
 #  HELPER FUNCTIONS
 # ==============================================================================
+
+def is_spot_occupied(world, target_location, ignore_actor_id, threshold=2.5):
+    """
+    Checks if a target location is already occupied by another vehicle.
+    Calculates Euclidean distance to all other vehicles.
+    """
+    vehicles = world.get_actors().filter('vehicle.*')
+    for vehicle in vehicles:
+        if vehicle.id == ignore_actor_id:
+            continue 
+        
+        dist = vehicle.get_location().distance(target_location)
+        if dist < threshold:
+            return True
+    return False
 
 def process_instance_map_fixed(inst_raw_data):
     """Parses CARLA Instance Bitmap for Visualization."""
@@ -75,6 +90,8 @@ def get_unique_colors_from_sensor(inst_raw_data):
 
 def spawn_parked_cars_front_of_hero(world, vehicle_library, entry, hero_position, translation_vector, rotation_matrix):
     spawned_actors = [] 
+    
+    # 1. Extract color from JSON
     target_color = None
     if "color" in entry and entry["color"]:
         try:
@@ -83,13 +100,17 @@ def spawn_parked_cars_front_of_hero(world, vehicle_library, entry, hero_position
             pass
     if target_color is None: target_color = [128, 128, 128]
 
+    # 2. Define temp position (Front of Hero)
     temp_start=[15.420957288852122, -170.21387689825545, 0.0]
+    
     start = get_transform_position(temp_start, translation_vector, rotation_matrix)
     heading = (entry["heading"] + ROTATION_DEGREES) % 360
 
+    # 3. Choose Blueprint and Set Color
     blueprint = random.choice(vehicle_library)
     if blueprint.has_attribute('color'):
-        blueprint.set_attribute('color', f"{target_color[0]},{target_color[1]},{target_color[2]}")
+        color_str = f"{target_color[0]},{target_color[1]},{target_color[2]}"
+        blueprint.set_attribute('color', color_str)
 
     x, y, z = start[0], start[1], start[2] if len(start) > 2 else 0.0
 
@@ -105,6 +126,7 @@ def spawn_parked_cars_front_of_hero(world, vehicle_library, entry, hero_position
         spawned_actors.append(actor)
     except RuntimeError:
         pass
+    
     return spawned_actors
 
 def flush_all_queues(seg_q, rgb_q, depth_q, inst_q, flow_q):
@@ -120,8 +142,6 @@ def flush_all_queues(seg_q, rgb_q, depth_q, inst_q, flow_q):
 # ==============================================================================
 
 args = parse_testing_args()
-
-
 
 client = carla.Client(args.carla_ip, args.carla_port)
 client.set_timeout(40.0) 
@@ -195,7 +215,7 @@ if not args.no_save:
     os.makedirs(instance_dir, exist_ok=True)
 
 # ==============================================================================
-# ⚡ ROBUST MAPPING LOOP (MEMORY SAFE)
+# ⚡ ROBUST MAPPING LOOP
 # ==============================================================================
 os.makedirs("mapping", exist_ok=True)
 count = 0
@@ -220,12 +240,11 @@ print(f"Calibration Complete. Ignored Colors: {len(known_colors)}")
 for entry in spawn_positions:
 
     # ---------------------------------------------------------
-    # 👇 MODIFICATION: STOP AFTER 3 ENTRIES
+    # LIMIT CHECK (Optional)
     # ---------------------------------------------------------
-    if count >= 3:
+    if count >= 1000:
         print("🛑 DEBUG LIMIT REACHED: Stopping script after 3 entries.")
         break
-    # ---------------------------------------------------------
     
     # --- MEMORY MANAGEMENT ---
     if count % 10 == 0:
@@ -234,7 +253,9 @@ for entry in spawn_positions:
     current_actor = None
     actor_spawned = False
     
-    # --- STEP 1: RETRY SPAWN LOOP ---
+    # =========================================================
+    # PHASE 1: SPAWN IN FRONT OF HERO
+    # =========================================================
     spawn_retries = 0
     while not actor_spawned:
         pygame.event.pump() 
@@ -260,7 +281,9 @@ for entry in spawn_positions:
         count += 1
         continue
 
-    # --- STEP 2: DETECT COLOR ---
+    # =========================================================
+    # PHASE 2: MAP COLOR (Sensor Detection)
+    # =========================================================
     detected_key = None
     attempts = 0
     max_attempts = 50 
@@ -285,10 +308,9 @@ for entry in spawn_positions:
             known_colors.add(detected_key)
             print(f"✅ Mapped Vehicle {count}: Color {detected_key}")
             
-            debug_img = process_instance_map_fixed(inst_data)
-            debug_img.save(os.path.join("mapping", f"debug_{count:03d}.png"))
-            
-            del debug_img 
+            # debug_img = process_instance_map_fixed(inst_data)
+            # debug_img.save(os.path.join("mapping", f"debug_{count:03d}.png"))
+            # del debug_img 
             break 
         
         del inst_data 
@@ -297,52 +319,85 @@ for entry in spawn_positions:
     if not detected_key:
         print(f"⚠️ Warning: TIMEOUT waiting for color for vehicle {count}")
 
-    # --- STEP 3: MOVE TO REAL POSITION ---
+    # =========================================================
+    # PHASE 3: TELEPORT TO REAL POSITION
+    # =========================================================
     start = get_transform_position(entry["start"], translation_vector, rotation_matrix)
+    end = get_transform_position(entry["end"], translation_vector, rotation_matrix)
+    base_z = 0.2
+    print(base_z)
     heading = (entry["heading"] + ROTATION_DEGREES) % 360
-    
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+        #length = math.sqrt(dx ** 2 + dy ** 2)
+    length = 1
+    ux, uy = dx / length, dy / length
+    # Calculation of position
+    x = start[0] 
+    y = start[1]
+    if len(start) > 2: 
+        z = start[2]
+    else: 
+        print("0.5") 
+        z=0.5
+    print(x,y,z)
+
     veh_heading = heading
     if entry["mode"].strip() == "perpendicular" and random.random() < 0.5:
         veh_heading = (veh_heading + 180) % 360
 
     real_transform = carla.Transform(
-        carla.Location(x=start[0], y=start[1], z=start[2] if len(start) > 2 else 0.05), 
+        carla.Location(x=start[0], y=start[1], z=base_z+0.05), 
         carla.Rotation(yaw=veh_heading)
     )
     
-    current_actor.set_simulate_physics(False) 
-    current_actor.set_transform(real_transform)
+    # 1. Teleport first
     
-    # --- STEP 4: PHYSICS SETTLE ---
-    for _ in range(10):
-        world.tick()
-        pygame.event.pump()
-        flush_all_queues(seg_queue, rgb_queue, depth_queue, inst_queue, flow_queue)
+    try:
+        blueprint = random.choice(vehicle_library)
+        actor=world.spawn_actor(blueprint, real_transform)
+        actor.destroy()
+        current_actor.set_transform(real_transform)
+        current_actor.set_simulate_physics(False)
+        print(f"Spawned Car")
+
+    except RuntimeError as e:
+        current_actor.destroy()
+        print(f"❌ Could not spawn carsas: {e}")
+    # 2. Tick world to register new position internally (handles "rendering time")
+    world.tick()
+    flush_all_queues(seg_queue, rgb_queue, depth_queue, inst_queue, flow_queue)
+
+    # =========================================================
+    # PHASE 4: CHECK COLLISION & HANDLE
+    # =========================================================
+    
+
 
     count += 1
 
 print("✅ All vehicles processed.")
 print(f"Total Mapped: {len(detected_color_map)}")
-print(f"Total Mapped: {detected_color_map}")
+
 # ==============================================================================
 #  GRACEFUL HANDOFF
 # ==============================================================================
+file_path = "instance_map.txt"
+json_ready_map = {str(k): v for k, v in detected_color_map.items()}
 
-print("✅ All vehicles processed and positioned.")
-print(f"Total Mapped: {len(detected_color_map)}")
+with open(file_path, 'w') as f:
+    json.dump(json_ready_map, f, indent=4)
 
-# --- STEP 1: STOP DATA STREAMS ---
-# We must tell the C++ client to stop pushing data to Python, 
-# otherwise we get a Core Dump when Python closes.
-# The sensors will REMAIN in the world, they just stop sending data to *this* script.
+print(f"Saved successfully to {file_path}")
 
+# --- STOP DATA STREAMS ---
 if 'seg_sensor' in locals() and seg_sensor is not None: seg_sensor.stop()
 if 'rgb_sensor' in locals() and rgb_sensor is not None: rgb_sensor.stop()
 if 'depth_sensor' in locals() and depth_sensor is not None: depth_sensor.stop()
 if 'inst_sensor' in locals() and inst_sensor is not None: inst_sensor.stop()
 if 'flow_sensor' in locals() and flow_sensor is not None: flow_sensor.stop()
 
-# --- STEP 2: CLEANUP PYTHON MEMORY ---
+# --- CLEANUP PYTHON MEMORY ---
 seg_queue = None
 rgb_queue = None
 depth_queue = None
@@ -350,15 +405,8 @@ inst_queue = None
 flow_queue = None
 gc.collect()
 
-# --- STEP 3: FREEZE SIMULATION ---
-# We leave Synchronous Mode = True. The server pauses here.
+# --- FREEZE SIMULATION ---
 print("-" * 30)
 print("❄️  SIMULATION PAUSED (Synchronous Mode Active)")
 print("🚗 Hero Vehicle & Parked Cars are frozen in position.")
-print("📷 Sensors are still attached (but idle).")
-print("🔜 The server is waiting for your Control Script to call world.tick()")
 print("-" * 30)
-
-# The warnings "sensor object went out of scope..." will still appear.
-# This is EXPECTED and confirms the sensors were abandoned (left alive) 
-# rather than destroyed.

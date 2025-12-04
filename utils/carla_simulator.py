@@ -235,7 +235,7 @@ def spawn_parked_cars2(world, vehicle_library, spawn_positions, translation_vect
             x = start[0] + i * CAR_SPACING * ux
             y = start[1] + i * CAR_SPACING * uy
             z = start[2] if len(start) > 2 else 0.0
-
+            print(x,y,z)
             veh_heading = heading
             if entry["mode"].strip() == "perpendicular" and random.random() < 0.5:
                 veh_heading = (veh_heading + 180) % 360
