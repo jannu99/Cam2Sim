@@ -3,7 +3,8 @@
 
 """
 Create trajectory_positions.json in maps/<map_name>/
-using Lane-Based Heading Calculation (matching dataset generation logic).
+using KINEMATIC Heading Calculation (Direction of Travel).
+This guarantees no 180-degree flips because it follows the car's motion vector.
 
 Input format (position.txt):
 # FrameID, Timestamp_Sec, Odom_X, Odom_Y, Odom_Yaw, Lat, Lon
@@ -14,19 +15,16 @@ import json
 import math
 import argparse
 import numpy as np
-import pandas as pd
-from shapely.geometry import Point, LineString, MultiLineString
+from shapely.geometry import Point
 
 # ==========================================
-# 📦 IMPORTS (Must match your project structure)
+# 📦 IMPORTS
 # ==========================================
 from config import MAPS_FOLDER_NAME, SPAWN_OFFSET_METERS
 from utils.map_data import (
     fetch_osm_data,
-    generate_spawn_gdf,
     get_origin_lat_lon,
     latlon_to_carla,
-    get_heading,
 )
 
 # ==========================================
@@ -36,7 +34,12 @@ LAT0 = 48.17552100
 LON0 = 11.59523900
 ODOM0_X = 692925.990
 ODOM0_Y = 5339070.997
-YAW_OFFSET = -0.00000000
+
+# --- 🎯 CALIBRATED OFFSETS ---
+SHIFT_X    = -4.231
+SHIFT_Y    = 6.538
+YAW_OFFSET = -0.04666667
+# -----------------------------
 
 def enu_to_latlon(dx_m, dy_m, lat_ref, lon_ref):
     lat_ref_rad = math.radians(lat_ref)
@@ -47,16 +50,46 @@ def enu_to_latlon(dx_m, dy_m, lat_ref, lon_ref):
     return lat_ref + dlat_deg, lon_ref + dlon_deg
 
 def odom_xy_to_wgs84_vec(x_arr: np.ndarray, y_arr: np.ndarray):
+    # 1. Center coordinates
     dx = x_arr.astype(float) - ODOM0_X
     dy = y_arr.astype(float) - ODOM0_Y
+    
+    # 2. APPLY CALIBRATED SHIFTS (Translation)
+    dx = dx + SHIFT_X
+    dy = dy + SHIFT_Y
+
+    # 3. Apply Rotation (Yaw)
     c, s = math.cos(YAW_OFFSET), math.sin(YAW_OFFSET)
     dx_e = c * dx - s * dy
     dy_n = s * dx + c * dy
+    
+    # 4. Convert to Geodetic (Lat/Lon)
     lat = np.empty_like(dx_e, dtype=float)
     lon = np.empty_like(dy_n, dtype=float)
     for i in range(dx_e.size):
         lat[i], lon[i] = enu_to_latlon(dx_e[i], dy_n[i], LAT0, LON0)
     return lat, lon
+
+def calculate_kinematic_heading(current_pos, next_pos):
+    """
+    Calculates the heading (yaw) between two points (x, y).
+    Returns degrees in [0, 360).
+    """
+    dx = next_pos[0] - current_pos[0]
+    dy = next_pos[1] - current_pos[1]
+    
+    # If the car isn't moving, return None to keep previous heading
+    if abs(dx) < 0.001 and abs(dy) < 0.001:
+        return None
+
+    # Calculate angle in radians
+    angle_rad = math.atan2(dy, dx)
+    
+    # Convert to degrees
+    angle_deg = math.degrees(angle_rad)
+    
+    # Normalize to [0, 360) for CARLA
+    return angle_deg % 360.0
 
 # ==========================================
 # 📂 DATA LOADING
@@ -78,7 +111,6 @@ def load_positions(path: str):
                 timestamps.append(float(parts[1]))
                 oxs.append(float(parts[2]))
                 oys.append(float(parts[3]))
-                # We ignore Odom Yaw (parts[4]) entirely!
             except ValueError: continue
 
     return (np.array(frames), np.array(timestamps), np.array(oxs), np.array(oys))
@@ -97,60 +129,49 @@ def main():
     # 1. Load Trajectory Data
     frames, times, ox, oy = load_positions(args.positions)
     print(f"[INFO] Loaded {len(frames)} frames.")
-
-    # 2. Load Map Data
-    print(f"[INFO] Loading Map Data from {args.map}...")
-    _, edges, _ = fetch_osm_data(map_folder)
     
-    # Get Anchors
+    # 2. Load Map Data (Only needed for coordinate anchor now)
+    print(f"[INFO] Loading Map Data for coordinate anchor...")
+    _, edges, _ = fetch_osm_data(map_folder)
     origin_lat, origin_lon = get_origin_lat_lon(edges, "")
-    print(f"[DEBUG] Map Origin: Lat {origin_lat}, Lon {origin_lon}")
-
-    # 3. Convert Odom -> Lat/Lon
+    
+    # 3. Convert Odom -> Lat/Lon -> CARLA (Applying Shifts)
+    print(f"[INFO] Converting coordinates with Shift X:{SHIFT_X}, Y:{SHIFT_Y}...")
     traj_lats, traj_lons = odom_xy_to_wgs84_vec(ox, oy)
-
-    # 4. Generate Spawn GDF (Lanes) for Heading Calculation
-    print("[INFO] Generating Lane Geometry to calculate headings...")
-    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS, override=True)
+    
+    # Pre-calculate all CARLA positions to make heading look-ahead easier
+    carla_positions = []
+    for i in range(len(frames)):
+        cx, cy, _ = latlon_to_carla(origin_lat, origin_lon, traj_lats[i], traj_lons[i])
+        carla_positions.append((cx, cy))
     
     trajectory_data = []
 
-    print("[INFO] Processing frames...")
+    print("[INFO] Computing Kinematic Headings...")
+    
+    LOOKAHEAD = 5  # Look 5 frames ahead to smooth out jitter
+    last_valid_heading = 0.0
+
     for i in range(len(frames)):
-        lat_i = float(traj_lats[i])
-        lon_i = float(traj_lons[i])
-        pt = Point(lon_i, lat_i)
+        cx, cy = carla_positions[i]
         
-        # Default Heading (if no lane found)
-        final_heading = 0.0
+        # --- KINEMATIC HEADING LOGIC ---
+        # Look ahead to find the direction vector
+        target_idx = min(i + LOOKAHEAD, len(frames) - 1)
         
-        # --- LOGIC COPIED FROM YOUR DATASET SCRIPT ---
-        if not spawn_gdf.empty:
-            # Find nearest lane
-            dists = spawn_gdf.geometry.distance(pt)
-            min_idx = int(dists.idxmin())
-            row = spawn_gdf.loc[min_idx]
-            lane_geom = row.geometry
-            side = row["side"]
+        heading_val = None
+        
+        # If we are at the very end, look backwards
+        if target_idx == i and i > 0:
+            prev_idx = max(0, i - LOOKAHEAD)
+            heading_val = calculate_kinematic_heading(carla_positions[prev_idx], (cx, cy))
+        else:
+            heading_val = calculate_kinematic_heading((cx, cy), carla_positions[target_idx])
             
-            # Handle MultiLineString
-            if isinstance(lane_geom, MultiLineString):
-                lane_geom = max(lane_geom, key=lambda g: g.length)
-
-            if isinstance(lane_geom, LineString):
-                # Calculate Heading from Lane Geometry
-                coords = list(lane_geom.coords)
-                h = get_heading(coords[0][1], coords[0][0], coords[-1][1], coords[-1][0])
-                
-                # Adjust for side (Left lanes are usually opposed to digitizing direction)
-                if side == "left":
-                    h = (h + 180.0) % 360.0
-                final_heading = h
-        
-        # Convert Lat/Lon to CARLA World Coordinates
-        cx, cy, _ = latlon_to_carla(origin_lat, origin_lon, lat_i, lon_i)
-
-        # Build JSON Entry
+        # If car stopped or data undefined, use last known heading
+        if heading_val is not None:
+            last_valid_heading = heading_val
+            
         entry = {
             "frame_id": int(frames[i]),
             "timestamp": float(times[i]),
@@ -162,7 +183,7 @@ def main():
                 },
                 "rotation": {
                     "pitch": 0.0,
-                    "yaw": final_heading,  # THIS IS NOW THE CORRECT LANE HEADING
+                    "yaw": last_valid_heading,  # Calculated from actual movement
                     "roll": 0.0
                 }
             }

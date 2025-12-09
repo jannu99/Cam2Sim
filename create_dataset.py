@@ -1,3 +1,4 @@
+import sys
 import os
 import json
 import math
@@ -36,7 +37,11 @@ LAT0 = 48.17552100
 LON0 = 11.59523900
 ODOM0_X = 692925.990
 ODOM0_Y = 5339070.997
-YAW_OFFSET = -0.00000000
+SHIFT_X    = -2.733
+SHIFT_Y    = 6.171
+YAW_OFFSET = -0.04666667
+# ----------------------------------------
+
 INSTANCE_FOLDER_NAME = "instance"
 
 # ==========================================
@@ -52,11 +57,20 @@ def enu_to_latlon(dx_m, dy_m, lat_ref, lon_ref):
     return lat_ref + dlat_deg, lon_ref + dlon_deg
 
 def odom_xy_to_wgs84_vec(x_arr: np.ndarray, y_arr: np.ndarray):
+    # 1. Center coordinates
     dx = x_arr.astype(float) - ODOM0_X
     dy = y_arr.astype(float) - ODOM0_Y
+    
+    # 2. APPLY CALIBRATED SHIFTS (Translation)
+    dx = dx + SHIFT_X
+    dy = dy + SHIFT_Y
+
+    # 3. Apply Rotation (Yaw)
     c, s = math.cos(YAW_OFFSET), math.sin(YAW_OFFSET)
     dx_e = c * dx - s * dy
     dy_n = s * dx + c * dy
+    
+    # 4. Convert to Geodetic (Lat/Lon)
     lat = np.empty_like(dx_e, dtype=float)
     lon = np.empty_like(dy_n, dtype=float)
     for i in range(dx_e.size):
@@ -88,7 +102,7 @@ def load_odom_frames_xy(path: str):
 # ==========================================
 
 def calculate_frame_projections(frame_ids, cent_x, cent_y, edges):
-    print(f"[INFO] Projecting {cent_x.size} frames onto map edges...")
+    print(f"[INFO] Processing {cent_x.size} frames (Direct Spawn Mode)...")
     
     cent_lat, cent_lon = odom_xy_to_wgs84_vec(cent_x, cent_y)
     origin_lat, origin_lon = get_origin_lat_lon(edges, "")
@@ -104,15 +118,19 @@ def calculate_frame_projections(frame_ids, cent_x, cent_y, edges):
         lon_i = float(cent_lon[i])
         pt = Point(lon_i, lat_i)
         
-        # Defaults
+        # 1. Convert RAW GPS to Carla Coordinates immediately
         raw_x, raw_y, _ = latlon_to_carla(origin_lat, origin_lon, lat_i, lon_i)
+        
+        # Lift slightly to avoid z-fighting with road
         start_pos = (raw_x, raw_y, 0.0)
         end_pos = (raw_x + 0.0001, raw_y + 0.0001, 0.0)
+        
         final_heading = 0.0
         street_id = None
         side = "unknown"
-        mode = "parallel"
+        mode = "direct"
 
+        # 2. Use Map ONLY for Heading and Metadata
         if not spawn_gdf.empty:
             dists = spawn_gdf.geometry.distance(pt)
             min_idx = int(dists.idxmin())
@@ -126,27 +144,11 @@ def calculate_frame_projections(frame_ids, cent_x, cent_y, edges):
 
             if isinstance(lane_geom, LineString):
                 proj_dist = lane_geom.project(pt)
-                proj_point = lane_geom.interpolate(proj_dist)
-                
-                # --- EXACT LOGIC: Lane Metadata + Raw GPS Position ---
-                # proj_lat = proj_point.y  # (We use lane for heading only)
-                # proj_lon = proj_point.x 
-                
-                # OVERRIDE with GPS Position to keep shape
-                proj_lat = lat_i  
-                proj_lon = lon_i
-                
-                # Heading from Lane
                 coords = list(lane_geom.coords)
                 h = get_heading(coords[0][1], coords[0][0], coords[-1][1], coords[-1][0])
                 if side == "left":
                     h = (h + 180.0) % 360.0
                 final_heading = h
-                
-                # Convert to Carla
-                cx, cy, _ = latlon_to_carla(origin_lat, origin_lon, proj_lat, proj_lon)
-                start_pos = (cx, cy, 0.0)
-                end_pos = (cx + 0.0001, cy + 0.0001, 0.0)
 
         results[fid] = {
             "start": start_pos,
@@ -236,16 +238,25 @@ def apply_calculated_data(dataset, calculation_results, output_folder):
 # ==========================================
 
 # 1. ARGS & SETUP
-parser = argparse.ArgumentParser(add_help=False) 
-parser.add_argument("--map", help="Map name")
-parser.add_argument("--frames", help="Path to positions.txt")
-extra_args, _ = parser.parse_known_args()
+# Hack to handle strict argparse
+json_only_mode = False
+if "--json_only" in sys.argv:
+    json_only_mode = True
+    sys.argv.remove("--json_only")
 
 args = parse_dataset_args()
-if not hasattr(args, 'map') and extra_args.map: args.map = extra_args.map
-if not hasattr(args, 'frames') and extra_args.frames: args.frames = extra_args.frames
+args.json_only = json_only_mode
 
-if not args.map or not args.frames:
+# Inject Map/Frames if missing from strict parser
+if "--map" in sys.argv and not hasattr(args, 'map'):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--map")
+    parser.add_argument("--frames")
+    extra, _ = parser.parse_known_args()
+    if extra.map: args.map = extra.map
+    if extra.frames: args.frames = extra.frames
+
+if not hasattr(args, 'map') or not args.map or not hasattr(args, 'frames') or not args.frames:
     raise ValueError("❌ Missing arguments! Please provide --map <name> and --frames <file.txt>")
 
 create_dotenv()
@@ -253,21 +264,73 @@ load_dotenv()
 huggingface_token = os.getenv("HF_TOKEN")
 if huggingface_token: login(token=huggingface_token)
 
-# 2. PATHS & IMAGES
+# 2. PATHS
 dataset_name = args.name if args.name else get_dataset_folder_name(args.video)
 dataset_path = os.path.join(DATASETS_FOLDER_NAME, dataset_name)
 create_dataset_folders(dataset_path)
+
+# ==========================================
+# ⚡ FAST PATH: JSON ONLY
+# ==========================================
+if args.json_only:
+    print("⚡ Running in JSON-ONLY mode. Skipping image processing...")
+    
+    map_folder = os.path.join(MAPS_FOLDER_NAME, args.map)
+    print(f"📍 Loading positions from {args.frames}...")
+    frame_ids, cent_x, cent_y = load_odom_frames_xy(args.frames)
+    
+    print(f"🗺️ Loading Map Data from {args.map}...")
+    _, edges, _ = fetch_osm_data(map_folder)
+    
+    calc_results = calculate_frame_projections(frame_ids, cent_x, cent_y, edges)
+    
+    json_data = []
+    print("📝 Formatting JSON data...")
+    for fid, res in calc_results.items():
+        json_data.append({
+            "frame_id": fid, 
+            "street_id": res['street_id'], 
+            "mode": res['mode'], 
+            "side": res['side'], 
+            "start": res['start'], 
+            "end": res['end'], 
+            "heading": res['heading']
+        })
+
+    json_output_path = os.path.join(dataset_path, "vehicle_data.json")
+    with open(json_output_path, 'w') as f:
+        json.dump({"spawn_positions": json_data}, f, indent=2)
+    print(f"✅ JSON saved to: {json_output_path}")
+
+    if args.upload and huggingface_token:
+        print(f"☁️ Uploading vehicle_data.json to HuggingFace...")
+        api = HfApi(token=huggingface_token)
+        try:
+            api.upload_file(
+                path_or_fileobj=json_output_path,
+                path_in_repo="vehicle_data.json",
+                repo_id=f"{api.whoami()['name']}/{dataset_name}",
+                repo_type="dataset"
+            )
+            print("💻 JSON upload successful!")
+        except Exception as e:
+            print(f"❌ Upload failed: {e}")
+    
+    print("👋 JSON Job Complete. Exiting.")
+    exit(0)
+
+# ==========================================
+# 🐢 SLOW PATH: FULL IMAGE PIPELINE
+# ==========================================
 
 dataset = get_video_dataset(dataset_path, args.video, args.canny, args.blur, override=args.override)
 print("🎨 Generating Segmentation Masks...")
 create_segmentation_data(dataset, dataset_path)
 if args.canny: create_canny_data(dataset, dataset_path)
 
-# 3. POST-PROCESSING
 dataset = process_instance_folder(dataset_path, dataset)
 dataset = add_temporal_pairs(dataset) 
 
-# 4. MAP DATA
 if args.map and args.frames:
     map_folder = os.path.join(MAPS_FOLDER_NAME, args.map)
     print(f"📍 Loading positions from {args.frames}...")
@@ -278,17 +341,14 @@ if args.map and args.frames:
     calc_results = calculate_frame_projections(frame_ids, cent_x, cent_y, edges)
     dataset = apply_calculated_data(dataset, calc_results, dataset_path)
 
-# 5. UPLOAD (WITH IMAGE CASTING FIX)
 print("📦 Packaging dataset for upload...")
 hf_dataset = Dataset.from_list(dataset)
 
-# --- CRITICAL FIX: CAST COLUMNS TO IMAGE ---
 print("🖼️  Casting file paths to Image objects...")
 hf_dataset = hf_dataset.cast_column("image", Image())
 hf_dataset = hf_dataset.cast_column("segmentation", Image())
 hf_dataset = hf_dataset.cast_column("instance", Image())
 hf_dataset = hf_dataset.cast_column("previous", Image())
-# --------------------------------------------
 
 save_dataset(dataset_path, hf_dataset)
 print("\n📂 Dataset saved successfully to:", dataset_path)

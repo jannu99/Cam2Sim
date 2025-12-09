@@ -44,7 +44,7 @@ LON0 = 11.59523900
 ALT0 = 0.000
 ODOM0_X = 692925.990
 ODOM0_Y = 5339070.997
-YAW_OFFSET = -0.03000000  # radians (CCW positive)
+YAW_OFFSET = -0.04000000  # radians (CCW positive)
 
 # Optional: precise geodesic if available, else fallback
 try:

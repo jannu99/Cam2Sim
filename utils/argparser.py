@@ -15,6 +15,7 @@ def parse_dataset_args():
     # --- NEW ARGUMENTS ---
     parser.add_argument("--map", type=str, help="Name of the map folder (inside maps/) to use for coordinate alignment")
     parser.add_argument("--frames", type=str, help="Path to the positions file (e.g. positions.txt)")
+    parser.add_argument("--json_only", action='store_true', default=False, help="Skip image processing, generate JSON only")
 
     args = parser.parse_args()
     return args
