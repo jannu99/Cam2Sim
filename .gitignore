@@ -23,4 +23,5 @@ exports/*
 output/*
 !output/.gitkeep
 datasets/*
-!datasets/.gitkeep
+!datasets/.gitkeep+
+videos/*

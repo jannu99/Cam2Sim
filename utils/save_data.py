@@ -119,6 +119,7 @@ def get_map_data(map_name,starting_image_size = None, no_carla = False):
     xodr_file = os.path.join(map_folder, "map.xodr")
     osm_file = os.path.join(map_folder, "map.osm")
     vehicle_data_file = os.path.join(map_folder, "vehicle_data.json")
+    trajectory_data_file = os.path.join(map_folder, "trajectory_positions.json")
     if os.path.exists(xodr_file):
         with open(xodr_file, 'r') as f:
             xodr_data = f.read()
@@ -137,6 +138,9 @@ def get_map_data(map_name,starting_image_size = None, no_carla = False):
     with open(vehicle_data_file, 'r') as f:
         vehicle_data = json.load(f)
 
+    with open(trajectory_data_file, 'r') as f:
+        trajectory_data = json.load(f)
+
     starting_image_path = os.path.join(map_folder,"starting_image.jpg")
     # Check if the starting image exists
     if os.path.exists(starting_image_path) and starting_image_size is not None:
@@ -146,7 +150,8 @@ def get_map_data(map_name,starting_image_size = None, no_carla = False):
     return {
         "xodr_data": xodr_data,
         "vehicle_data": vehicle_data,
-        "starting_image": starting_image
+        "starting_image": starting_image,
+        "trajectory_data": trajectory_data
     }
 
 def get_model_data(model_name):

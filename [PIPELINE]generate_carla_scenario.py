@@ -242,8 +242,8 @@ for entry in spawn_positions:
     # ---------------------------------------------------------
     # LIMIT CHECK (Optional)
     # ---------------------------------------------------------
-    if count >= 1000:
-        print("🛑 DEBUG LIMIT REACHED: Stopping script after 3 entries.")
+    if count >= 10:
+        print("🛑 DEBUG LIMIT REACHED")
         break
     
     # --- MEMORY MANAGEMENT ---
