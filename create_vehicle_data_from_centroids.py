@@ -43,7 +43,12 @@ LON0 = 11.59523900
 ALT0 = 0.000
 ODOM0_X = 692925.990
 ODOM0_Y = 5339070.997
-YAW_OFFSET = -0.00000000  # radians (CCW positive)
+
+# --- 🎯 UPDATED CALIBRATION VALUES ---
+SHIFT_X    = -4.231       # East/West Shift
+SHIFT_Y    = 6.538        # North/South Shift
+YAW_OFFSET = -0.04666667  # Rotation (Radians)
+# -------------------------------------
 
 
 def enu_to_latlon(dx_m, dy_m, lat_ref, lon_ref):
@@ -70,9 +75,15 @@ def odom_xy_to_wgs84_vec(x_arr: np.ndarray, y_arr: np.ndarray):
     """
     Vectorized conversion from odom XY to (lat, lon).
     """
+    # 1. Center around ODOM origin
     dx = x_arr.astype(float) - ODOM0_X
     dy = y_arr.astype(float) - ODOM0_Y
 
+    # 2. APPLY CALIBRATED SHIFTS
+    dx = dx + SHIFT_X
+    dy = dy + SHIFT_Y
+
+    # 3. Apply Rotation
     c, s = math.cos(YAW_OFFSET), math.sin(YAW_OFFSET)
     dx_e = c * dx - s * dy  # east
     dy_n = s * dx + c * dy  # north
@@ -81,9 +92,7 @@ def odom_xy_to_wgs84_vec(x_arr: np.ndarray, y_arr: np.ndarray):
     lon = np.empty_like(dy_n, dtype=float)
     for i in range(dx_e.size):
         lat[i], lon[i] = enu_to_latlon(dx_e[i], dy_n[i], LAT0, LON0)
-    print(lat)
-    print("#######################################")
-    print(lon)
+    
     return lat, lon
 
 

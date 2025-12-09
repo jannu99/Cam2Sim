@@ -125,33 +125,51 @@ def cleanup_old_sensors(hero_vehicle):
 def sensor_callback(sensor_data, sensor_queue):
     sensor_queue.put(sensor_data)
 
-def save_data(frame_id, rgb_obj, sem_obj, inst_obj, transform_data, img_tf, mask_tf):
+def save_data(frame_id, rgb_obj, sem_obj, inst_obj, transform_data, target_size):
+    """
+    Saves data by forcing a resize to target_size (SQUASH/STRETCH), matching the training pipeline.
+    """
     global ALL_FRAME_DATA 
+    
     filename = f"{frame_id:06d}"
     
-    # RGB
+    # Define Target Size (Width, Height)
+    # The resize method expects a tuple (width, height)
+    target_res = (target_size, target_size)
+
+    # --- 1. RGB Processing ---
     rgb_arr = np.frombuffer(rgb_obj.raw_data, dtype=np.uint8)
     rgb_arr = np.reshape(rgb_arr, (rgb_obj.height, rgb_obj.width, 4))[:, :, :3][:, :, ::-1]
-    final_rgb = img_tf(Image.fromarray(rgb_arr))
+    rgb_pil = Image.fromarray(rgb_arr)
+    
+    # FORCE RESIZE (STRETCH) - Using LANCZOS for high quality photo resizing
+    # This ignores aspect ratio, squashing the 800x503 image into 512x512
+    final_rgb = rgb_pil.resize(target_res, resample=Image.Resampling.LANCZOS)
     final_rgb.save(f"{OUTPUT_FOLDER}/rgb/{filename}.png")
 
-    # Semantic
+    # --- 2. Semantic Segmentation Processing ---
     sem_obj.convert(carla.ColorConverter.CityScapesPalette)
-    final_sem = mask_tf(remap_segmentation_colors(carla_image_to_pil(sem_obj)))
+    sem_pil_raw = remap_segmentation_colors(carla_image_to_pil(sem_obj))
+    
+    # FORCE RESIZE (STRETCH) - Using NEAREST to preserve exact colors/IDs
+    # (Using Lanczos here would blend colors, creating invalid classes)
+    final_sem = sem_pil_raw.resize(target_res, resample=Image.Resampling.NEAREST)
     final_sem.save(f"{OUTPUT_FOLDER}/semantic/{filename}.png")
 
-    # Instance
-    final_inst = mask_tf(process_instance_map_fixed(inst_obj))
+    # --- 3. Instance Segmentation Processing ---
+    inst_pil_raw = process_instance_map_fixed(inst_obj)
+    
+    # FORCE RESIZE (STRETCH) - Using NEAREST
+    final_inst = inst_pil_raw.resize(target_res, resample=Image.Resampling.NEAREST)
     final_inst.save(f"{OUTPUT_FOLDER}/instance/{filename}.png")
 
-    # Metadata
+    # --- 4. Metadata ---
     ALL_FRAME_DATA.append({
         "frame": frame_id,
         "location": transform_data["location"],
         "rotation": transform_data["rotation"],
         "caption": f"pos x {transform_data['location']['x']:.2f}, y {transform_data['location']['y']:.2f}"
     })
-
 # ==============================================================================
 #  MAIN LOGIC
 # ==============================================================================
@@ -221,7 +239,7 @@ def main():
     
     # Important: Add z offset +0.5 to prevent floor clipping
     start_transform = carla.Transform(
-        carla.Location(x=start_loc_mapped[0], y=start_loc_mapped[1], z=start_loc_mapped[2] + 0.5),
+        carla.Location(x=start_loc_mapped[0], y=start_loc_mapped[1], z=start_loc_mapped[2] ),
         carla.Rotation(pitch=0, yaw=start_yaw_mapped, roll=0)
     )
 
@@ -310,7 +328,7 @@ def main():
 
             # Create CARLA Transform (Z + 0.5 safe offset)
             target_tf = carla.Transform(
-                carla.Location(x=final_loc[0], y=final_loc[1], z=final_loc[2] + 0.5),
+                carla.Location(x=final_loc[0], y=final_loc[1], z=final_loc[2] ),
                 carla.Rotation(pitch=0.0, yaw=final_yaw, roll=0.0)
             )
 
@@ -334,8 +352,7 @@ def main():
             actual_tf = hero_vehicle.get_transform()
             current_transform_mapped = get_inverse_transform(actual_tf, args.model, args.map)
             
-            save_data(point["frame_id"], rgb_data, sem_data, inst_data, current_transform_mapped, image_transforms, mask_transforms)
-
+            save_data(point["frame_id"], rgb_data, sem_data, inst_data, current_transform_mapped, target_size)
             # F. Render RGB to Pygame
             array = np.frombuffer(rgb_data.raw_data, dtype=np.uint8)
             array = np.reshape(array, (rgb_data.height, rgb_data.width, 4))
