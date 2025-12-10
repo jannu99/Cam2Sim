@@ -15,12 +15,12 @@ import json
 import math
 import argparse
 import numpy as np
-from shapely.geometry import Point
+
 
 # ==========================================
 # 📦 IMPORTS
 # ==========================================
-from config import MAPS_FOLDER_NAME, SPAWN_OFFSET_METERS
+from config import MAPS_FOLDER_NAME
 from utils.map_data import (
     fetch_osm_data,
     get_origin_lat_lon,
@@ -38,7 +38,7 @@ ODOM0_Y = 5339070.997
 # --- 🎯 CALIBRATED OFFSETS ---
 SHIFT_X    = -4.231
 SHIFT_Y    = 6.538
-YAW_OFFSET = -0.04666667
+YAW_OFFSET = -0.05435897
 # -----------------------------
 
 def enu_to_latlon(dx_m, dy_m, lat_ref, lon_ref):

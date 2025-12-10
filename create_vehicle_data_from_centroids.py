@@ -25,7 +25,7 @@ import numpy as np
 from shapely.geometry import Point, LineString, MultiLineString
 from collections import Counter
 
-from config import MAPS_FOLDER_NAME, SPAWN_OFFSET_METERS, CAR_SPACING
+from config import MAPS_FOLDER_NAME, SPAWN_OFFSET_METERS, CAR_SPACING, SPAWN_OFFSET_METERS_LEFT, SPAWN_OFFSET_METERS_RIGHT
 from utils.map_data import (
     fetch_osm_data,
     generate_spawn_gdf,
@@ -45,9 +45,9 @@ ODOM0_X = 692925.990
 ODOM0_Y = 5339070.997
 
 # --- 🎯 UPDATED CALIBRATION VALUES ---
-SHIFT_X    = -4.231       # East/West Shift
-SHIFT_Y    = 6.538        # North/South Shift
-YAW_OFFSET = -0.04666667  # Rotation (Radians)
+SHIFT_X    = -4.231
+SHIFT_Y    = 6.538
+YAW_OFFSET = -0.05435897
 # -------------------------------------
 
 
@@ -205,7 +205,7 @@ def build_spawn_positions_from_centroids(cluster_ids, cent_x, cent_y,
 
     cent_lat, cent_lon = odom_xy_to_wgs84_vec(cent_x, cent_y)
 
-    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS, override=True)
+    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS, offset_left=SPAWN_OFFSET_METERS_LEFT,  offset_right=SPAWN_OFFSET_METERS_RIGHT, override=True)
     if spawn_gdf.empty:
         raise RuntimeError("spawn_gdf is empty: no parking lines generated.")
 

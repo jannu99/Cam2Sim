@@ -1,7 +1,7 @@
 import json
 import os.path
 
-from config import MAPS_FOLDER_NAME, SPAWN_OFFSET_METERS
+from config import MAPS_FOLDER_NAME, SPAWN_OFFSET_METERS, SPAWN_OFFSET_METERS_LEFT, SPAWN_OFFSET_METERS_RIGHT
 from utils.argparser import parse_map_args
 from utils.map_data import get_street_data, fetch_osm_data, generate_spawn_gdf, get_origin_lat_lon, latlon_to_carla, get_heading
 from utils.other import ensure_carla_functionality
@@ -17,7 +17,7 @@ from shapely.geometry import LineString
 
 def generate_all_segments(edges, origin_lat, origin_lon, folder_name, dist_value):
 
-    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS)
+    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS,  offset_left=SPAWN_OFFSET_METERS_LEFT,  offset_right=SPAWN_OFFSET_METERS_RIGHT)
 
     print(f"[AUTO] Trovati {len(spawn_gdf)} segmenti di parcheggio possibili")
 

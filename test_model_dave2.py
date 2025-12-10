@@ -266,10 +266,9 @@ try:
             steering_image = generated_image
 
         steering, throttle = send_image_over_connection(dave2_conn, steering_image)
-        prev_steer = steering
+        # prev_steer = steering
 
-        steering = prev_steer * 0.8 + steering * (1.0 - 0.8)
-
+        # steering = prev_steer * 0.8 + steering * (1.0 - 0.8)
             #steering, throttle = calculate_dave2_image(dave2_model, generated_image)
         print(f"Steering: {steering}, SteeringRad: {np.radians(steering)}, Throttle: {throttle}")
         steering_rad = np.radians(steering)

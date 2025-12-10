@@ -26,3 +26,6 @@ datasets/*
 !datasets/.gitkeep+
 videos/*
 segmentation_maps/*
+dataset_output_old_shift/*
+dataset_output_all/*
+dataset_output_DAVE2/*

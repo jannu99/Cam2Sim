@@ -7,7 +7,7 @@ import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 import numpy as np
 
-from config import CLICK_DISTANCE_THRESHOLD, HERO_CAR_OFFSET_METERS, SPAWN_OFFSET_METERS
+from config import CLICK_DISTANCE_THRESHOLD, HERO_CAR_OFFSET_METERS, SPAWN_OFFSET_METERS, SPAWN_OFFSET_METERS_LEFT, SPAWN_OFFSET_METERS_RIGHT
 from utils.debug import debug_hero_car_spawn, debug_hero_spawn_line_error, debug_spawn_line_distance, \
     debug_parking_area_created
 from utils.map_data import generate_spawn_gdf, get_heading, latlon_to_carla, get_origin_lat_lon
@@ -119,8 +119,9 @@ def create_plot(buildings_data, edges_data, address):
     global buildings, edges, hero_spawn_gdf, spawn_gdf, fig, ax, origin_lat, origin_lon
     buildings = buildings_data
     edges = edges_data
-    hero_spawn_gdf = generate_spawn_gdf(edges, offset=HERO_CAR_OFFSET_METERS, override=True)
-    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS)
+
+    hero_spawn_gdf = generate_spawn_gdf(edges, offset=HERO_CAR_OFFSET_METERS, offset_left=SPAWN_OFFSET_METERS_LEFT,  offset_right=SPAWN_OFFSET_METERS_RIGHT, override=True)
+    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS, offset_left=SPAWN_OFFSET_METERS_LEFT,  offset_right=SPAWN_OFFSET_METERS_RIGHT,)
 
     print("spawn_gdf length:", len(spawn_gdf))
     print("spawn_gdf geometry head:", spawn_gdf.geometry.head())

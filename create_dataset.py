@@ -9,7 +9,7 @@ from huggingface_hub import login, HfApi
 from dotenv import load_dotenv
 from datasets import Dataset, Image  # <--- IMPORTED IMAGE HERE
 
-from config import DATASETS_FOLDER_NAME, MAPS_FOLDER_NAME, SPAWN_OFFSET_METERS
+from config import DATASETS_FOLDER_NAME, MAPS_FOLDER_NAME, SPAWN_OFFSET_METERS, SPAWN_OFFSET_METERS_LEFT, SPAWN_OFFSET_METERS_RIGHT
 from utils.argparser import parse_dataset_args
 from utils.dataset import (
     get_video_dataset, 
@@ -37,9 +37,9 @@ LAT0 = 48.17552100
 LON0 = 11.59523900
 ODOM0_X = 692925.990
 ODOM0_Y = 5339070.997
-SHIFT_X    = -2.733
-SHIFT_Y    = 6.171
-YAW_OFFSET = -0.04666667
+SHIFT_X    = -4.231
+SHIFT_Y    = 6.538
+YAW_OFFSET = -0.05435897
 # ----------------------------------------
 
 INSTANCE_FOLDER_NAME = "instance"
@@ -107,8 +107,8 @@ def calculate_frame_projections(frame_ids, cent_x, cent_y, edges):
     cent_lat, cent_lon = odom_xy_to_wgs84_vec(cent_x, cent_y)
     origin_lat, origin_lon = get_origin_lat_lon(edges, "")
     print(f"DEBUG: Map Origin is Lat: {origin_lat}, Lon: {origin_lon}") 
-    
-    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS, override=True)
+
+    spawn_gdf = generate_spawn_gdf(edges, offset=SPAWN_OFFSET_METERS, offset_left=SPAWN_OFFSET_METERS_LEFT,  offset_right=SPAWN_OFFSET_METERS_RIGHT, override=True)
     
     results = {}
     

@@ -68,7 +68,7 @@ def get_street_data(address, dist=500):
 
     return response.content  # bytes
 
-def generate_spawn_gdf(edges, offset=4.0, override = False):
+def generate_spawn_gdf(edges, offset=4.0, offset_left=6.0, offset_right=5.2, override = False):
     lines = []
     sides = []
     for idx, row in edges.iterrows():
@@ -109,13 +109,13 @@ def generate_spawn_gdf(edges, offset=4.0, override = False):
 
         # Create parallel offsets conditionally
         if left_allowed:
-            left = geom.parallel_offset(offset / 111.32e3, 'left', join_style=2)
+            left = geom.parallel_offset(offset_left / 111.32e3, 'left', join_style=2)
             if isinstance(left, LineString):
                 lines.append(left)
                 sides.append("left")
 
         if right_allowed:
-            right = geom.parallel_offset(offset / 111.32e3, 'right', join_style=2)
+            right = geom.parallel_offset(offset_right / 111.32e3, 'right', join_style=2)
             if isinstance(right, LineString):
                 lines.append(right)
                 sides.append("right")

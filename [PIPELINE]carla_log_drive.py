@@ -239,7 +239,7 @@ def main():
     
     # Important: Add z offset +0.5 to prevent floor clipping
     start_transform = carla.Transform(
-        carla.Location(x=start_loc_mapped[0], y=start_loc_mapped[1], z=start_loc_mapped[2] ),
+        carla.Location(x=start_loc_mapped[0], y=start_loc_mapped[1], z=start_loc_mapped[2]+1 ),
         carla.Rotation(pitch=0, yaw=start_yaw_mapped, roll=0)
     )
 
