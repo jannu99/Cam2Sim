@@ -31,3 +31,6 @@ dataset_output_all/*
 dataset_output_DAVE2/*
 gurickestraemp4_25_12_02_local/*
 results_pipeline/*
+dave2_input_images/*
+*.png
+*.pyc

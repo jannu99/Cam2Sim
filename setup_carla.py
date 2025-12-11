@@ -52,8 +52,8 @@ try:
     print("✅ Starting CARLA with Low Quality...")
     
     # ADDED "-quality-level=Low" here
-    #result = subprocess.run([carla_script_path, "-quality-level=Low"], check=True)
-    result = subprocess.run([carla_script_path], check=True)
+    result = subprocess.run([carla_script_path, "-quality-level=Low"], check=True)
+    #result = subprocess.run([carla_script_path], check=True)
     print("🏁 CARLA finished with return code:", result.returncode)
 except subprocess.CalledProcessError as e:
     print("⚠️ CARLA script failed with error:", e)

@@ -242,7 +242,7 @@ for entry in spawn_positions:
     # ---------------------------------------------------------
     # LIMIT CHECK (Optional)
     # ---------------------------------------------------------
-    if count >= 20:
+    if count >= 1000:
         print("🛑 DEBUG LIMIT REACHED")
         break
     

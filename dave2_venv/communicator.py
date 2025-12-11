@@ -18,7 +18,7 @@ if gpus:
         print(e)
 
 # Load model once at startup
-dave2_model = Dave2Model("/home/davide/catkin_ws/src/ROS-small-scale-vehicle/mixed_reality/nodes/ads/final.h5")
+dave2_model = Dave2Model("/media/davidejannussi/New Volume/final.h5")
 
 HOST = "localhost"   # Listen on all interfaces
 PORT = 5090        # You can change this port

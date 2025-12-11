@@ -6,12 +6,15 @@ import os
 import sys
 import json
 import cv2 
-import ast
+import torch
+import ast  # <--- Added for color map parsing
 from PIL import Image, ImageOps 
 from queue import Queue, Empty
 import torchvision.transforms as transforms
 from collections import Counter
-import hashlib 
+from huggingface_hub import login, snapshot_download
+from diffusers import ControlNetModel, StableDiffusionControlNetPipeline
+from safetensors import safe_open
 
 # --- FIX: Ensure we run from the script's directory so ./models is found ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,76 +32,100 @@ from utils.carla_simulator import (
     remove_sensor, 
     remap_segmentation_colors as remap_seg_colors_util 
 )
-from utils.pygame_helper import setup_pygame, setup_sensor, get_sensor_blueprint, combine_images, show_image
+from utils.pygame_helper import setup_sensor, get_sensor_blueprint, combine_images, show_image
 from utils.save_data import get_model_data, get_map_data, create_output_folders, save_arguments, create_dotenv
 from config import HERO_VEHICLE_TYPE, ROTATION_DEGREES, OUTPUT_FOLDER_NAME, MODEL_FOLDER_NAME
 
 # DAVE-2 Specific Imports
 from dotenv import load_dotenv
-from huggingface_hub import login
 from utils.dave2_connection import connect_to_dave2_server, send_image_over_connection
-from utils.stable_diffusion import load_stable_diffusion_pipeline, generate_image
 from utils.yolo import calculate_yolo_image, load_yolo_model
 
 # ==============================================================================
-#  CONFIGURATION (MATCHING SCRIPT A EXACTLY)
+#  CONFIGURATION
 # ==============================================================================
 CARLA_IP = '127.0.0.1'
 CARLA_PORT = 2000
 IM_WIDTH = 800
 IM_HEIGHT = 503
 OUTPUT_FOLDER_NAME = "dataset_output_DAVE2"
+INSTANCE_MAP_FILE = "instance_map.txt"  # <--- Added
+
+# --- BEST MODEL PARAMETERS (FROM COLAB CELL 5) ---
+STABLE_DIFF_STEPS = 50
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Scales: Seg 0.7, Inst 0.7, Temp 1.1
+COND_SCALES = [0.7, 0.7, 1.1] 
+
+# Schedules (Start/End steps for each controlnet)
+# Order: [Segmentation, Instance, Temporal]
+CONTROL_START = [0.41, 0.0, 0.0]
+CONTROL_END   = [1.0, 0.4, 0.4]
+
+# Static Prompt from your script
+STATIC_PROMPT = "street, car, sidewalk, trees, person, trees, cars, trees, cars, trees, trees, trees, trees, trees, trees, trees, trees, trees, trees, trees, trees, trees, trees, trees, trees"
+NEGATIVE_PROMPT = "blurry, distorted, low quality, bad anatomy"
 
 # ==============================================================================
-#  HELPER FUNCTIONS (MATCHING SCRIPT A LOGIC)
+#  HELPER FUNCTIONS (CARLA)
 # ==============================================================================
 
-def get_most_frequent_color(pixels):
-    if len(pixels) == 0:
-        return np.array([0, 0, 0], dtype=np.uint8)
-    packed = pixels[:, 0] + (pixels[:, 1] << 8) + (pixels[:, 2] << 16)
-    counts = Counter(packed)
-    most_common_packed = counts.most_common(1)[0][0]
-    r = (most_common_packed) & 0xFF
-    g = (most_common_packed >> 8) & 0xFF
-    b = (most_common_packed >> 16) & 0xFF
-    return np.array([r, g, b], dtype=np.uint8) 
+def load_instance_color_map(filepath):
+    mapped_colors = {}
+    if not os.path.exists(filepath):
+        print(f"⚠️ Warning: {filepath} not found. No color remapping will occur.")
+        return mapped_colors
 
-def generate_instance_hash_image(inst_array_3ch):
-    b, g, r = inst_array_3ch[:,:,0].astype(np.int32), inst_array_3ch[:,:,1].astype(np.int32), inst_array_3ch[:,:,2].astype(np.int32)
-    pixel_ids_map = g + (b << 8)
-    r_hash = (pixel_ids_map * 13) % 255
-    g_hash = (pixel_ids_map * 37) % 255
-    b_hash = (pixel_ids_map * 61) % 255
-    hashed_inst = np.dstack((r_hash, g_hash, b_hash)).astype(np.uint8)
-    return hashed_inst, pixel_ids_map
+    try:
+        with open(filepath, 'r') as f:
+            raw_data = json.load(f)
+        for key_str, val_str in raw_data.items():
+            rgb_key = ast.literal_eval(key_str)
+            rgb_val = [int(x) for x in val_str.split(',')]
+            mapped_colors[rgb_key] = rgb_val
+        print(f"✅ Loaded {len(mapped_colors)} color mappings.")
+    except Exception as e:
+        print(f"❌ Error loading color map: {e}")
+    return mapped_colors
 
-def process_instance_map_fixed(inst_data, rgb_image_np):
-    # This logic matches your DAVE-2 colorization request, but implemented cleanly
-    inst_array = np.frombuffer(inst_data.raw_data, dtype=np.uint8).reshape((inst_data.height, inst_data.width, 4))[:,:,:3] 
-    hashed_inst_np, pixel_ids_map = generate_instance_hash_image(inst_array)
+# Initialize Global Color Map
+GLOBAL_COLOR_MAP = load_instance_color_map(INSTANCE_MAP_FILE)
+
+def process_instance_map_fixed(inst_raw_data):
+    """
+    Applies the specific math hash and color mapping from your reference script.
+    """
+    bgra = np.frombuffer(inst_raw_data.raw_data, dtype=np.uint8)
+    bgra = bgra.reshape((inst_raw_data.height, inst_raw_data.width, 4))
+    b_id = bgra[:, :, 0].astype(np.int32) 
+    g_id = bgra[:, :, 1].astype(np.int32)
+    tag  = bgra[:, :, 2] 
     
-    unique_colors, counts = np.unique(hashed_inst_np.reshape(-1, 3), axis=0, return_counts=True)
-    sorted_indices = np.argsort(-counts)
-    predominant_color = unique_colors[sorted_indices[0]] 
-    final_colored_inst = np.zeros_like(hashed_inst_np)
+    # Filter for vehicles (Tags: 14, 15, 16, 18)
+    vehicle_mask = np.isin(tag, [14, 15, 16, 18])
+    output = np.zeros((inst_raw_data.height, inst_raw_data.width, 3), dtype=np.uint8)
     
-    for i in sorted_indices:
-        color_hash = unique_colors[i]
-        count = counts[i]
-        is_target_mask = np.all(hashed_inst_np == color_hash, axis=-1)
-        
-        if np.array_equal(color_hash, predominant_color) or count < 100: 
-             final_colored_inst[is_target_mask] = [0, 0, 0] 
-        else:
-            original_pixels = rgb_image_np[is_target_mask]
-            if len(original_pixels) > 0:
-                true_color_gt = get_most_frequent_color(original_pixels)
-                final_colored_inst[is_target_mask] = true_color_gt
-            else:
-                final_colored_inst[is_target_mask] = [0, 0, 0]
-                 
-    return Image.fromarray(final_colored_inst)
+    # Apply Hash Formula
+    out_r = (g_id * 37 + b_id * 13) % 200 + 55
+    out_g = (g_id * 17 + b_id * 43) % 200 + 55
+    out_b = (g_id * 29 + b_id * 53) % 200 + 55
+    
+    # Apply colors only to masked vehicles
+    output[vehicle_mask, 0] = out_r[vehicle_mask]
+    output[vehicle_mask, 1] = out_g[vehicle_mask]
+    output[vehicle_mask, 2] = out_b[vehicle_mask]
+    
+    # Apply Global Remapping if it exists
+    if GLOBAL_COLOR_MAP:
+        for old_rgb, new_rgb in GLOBAL_COLOR_MAP.items():
+            source = np.array(old_rgb, dtype=np.uint8)
+            target = np.array(new_rgb, dtype=np.uint8)
+            mask = np.all(output == source, axis=-1)
+            if np.any(mask):
+                output[mask] = target
+
+    return Image.fromarray(output)
 
 def carla_image_to_pil(image) -> Image.Image:
     array = np.frombuffer(image.raw_data, dtype=np.uint8)
@@ -138,6 +165,110 @@ def cleanup_old_sensors(hero_vehicle):
     print(f"✅ Removed {count} old sensors.")
 
 # ==============================================================================
+#  HELPER FUNCTIONS (OPTIMIZED GENERATION)
+# ==============================================================================
+
+def check_essential_files(model_dir: str) -> bool:
+    if not os.path.exists(model_dir): return False
+    required = ["config.json", "stable_diffusion/pytorch_lora_weights.safetensors", "controlnet_instance/diffusion_pytorch_model.safetensors"]
+    for r in required:
+        if not os.path.exists(os.path.join(model_dir, r)): return False
+    return True
+
+def download_models_and_config(repo_id, local_dir, token):
+    if check_essential_files(local_dir):
+        print(f"✅ Models found locally in {local_dir}.")
+        return local_dir
+    print(f"⏳ Downloading models from {repo_id}...")
+    login(token=token, add_to_git_credential=False)
+    # Using snapshot_download logic from your script
+    return snapshot_download(
+        repo_id=repo_id, 
+        repo_type="model", 
+        local_dir=local_dir, 
+        local_dir_use_symlinks=False,
+        allow_patterns=[
+            "config.json", "lora_weights/*", "stable_diffusion/*", 
+            "controlnet_segmentation/*", "controlnet_instance/*", "controlnet_tempconsistency/*"
+        ]
+    )
+
+def load_pipeline_models(model_root, device):
+    config_path = os.path.join(model_root, "config.json")
+    with open(config_path, "r") as f:
+        model_data = json.load(f)
+
+    print("\n⏳ Loading ControlNet Models...")
+    # Load ControlNets
+    cnet_seg = ControlNetModel.from_pretrained(os.path.join(model_root, model_data["controlnet_segmentation"]), torch_dtype=torch.float16)
+    cnet_temp = ControlNetModel.from_pretrained(os.path.join(model_root, model_data["controlnet_tempconsistency"]), torch_dtype=torch.float16)
+    cnet_inst = ControlNetModel.from_pretrained(os.path.join(model_root, model_data["controlnet_instance"]), torch_dtype=torch.float16)
+
+    # Load Pipeline [Seg, Inst, Temp]
+    pipe = StableDiffusionControlNetPipeline.from_pretrained(
+        model_data["stable_diffusion_model"],
+        controlnet=[cnet_seg, cnet_inst, cnet_temp], 
+        torch_dtype=torch.float16,
+        use_safetensors=True,
+    ).to(device)
+
+    # Load LoRA
+    lora_path = os.path.join(model_root, model_data["lora_weights"])
+    print(f"⏳ Loading LoRA from: {lora_path}")
+    if lora_path.endswith(".safetensors"):
+        lora_state_dict = {}
+        with safe_open(lora_path, framework="pt", device="cpu") as f:
+            for key in f.keys(): lora_state_dict[key] = f.get_tensor(key)
+    else:
+        lora_state_dict = torch.load(lora_path, map_location="cpu")
+    
+    pipe.load_lora_weights(lora_state_dict)
+    return pipe, model_data
+
+def generate_image_realtime(
+    pipe, seg_image, inst_image, model_data, prev_image, guidance=3.0
+):
+    """
+    Generates one frame using the EXACT parameters from your Colab Cell 5.
+    """
+    
+    # 1. Prepare Control Images
+    # Temp uses previous image, or falls back to seg_image if None
+    ctrl_temp = prev_image if prev_image is not None else seg_image
+    
+    # ControlNet Input Order: [Seg, Inst, Temp] -> Matches pipeline load order
+    control_images = [seg_image, inst_image, ctrl_temp]
+    
+    # 2. Parameter Configuration (Optimized)
+    # Scales: [0.7, 0.7, 1.1] (0.0 for temp on first frame)
+    current_temp_scale = 1.1 if prev_image is not None else 0.0
+    controlnet_scales = [0.7, 0.7, current_temp_scale]
+
+    generator = torch.Generator(device=pipe.device).manual_seed(50) 
+
+    # 3. Call Pipeline
+    with torch.no_grad():
+        result = pipe(
+            prompt=STATIC_PROMPT,
+            image=control_images,
+            negative_prompt=NEGATIVE_PROMPT,
+            controlnet_conditioning_scale=controlnet_scales,
+            height=model_data["size"]["y"],
+            width=model_data["size"]["x"],
+            num_inference_steps=STABLE_DIFF_STEPS,
+            
+            # --- APPLIED SCHEDULES ---
+            control_guidance_start=CONTROL_START, # [0.41, 0.0, 0.0]
+            control_guidance_end=CONTROL_END,     # [1.0, 0.4, 0.4]
+            
+            guidance_scale=guidance,
+            guess_mode=True, # Explicitly TRUE per your script
+            output_type="pil",
+            generator=generator
+        )
+    return result.images[0]
+
+# ==============================================================================
 #  MAIN LOGIC
 # ==============================================================================
 
@@ -146,13 +277,13 @@ def main():
     args = parse_testing_args()
     create_dotenv()
     load_dotenv()
-    huggingface_token = os.getenv("HF_TOKEN")
-    if huggingface_token: login(token=huggingface_token)
+    hf_token = os.getenv("HF_TOKEN")
     
-    model_data = get_model_data(args.model)
-    # Read FOV from config, but ensure it's a string for Blueprint
-    fov_str = str(model_data["camera"]["fov"])
-    target_size = model_data["size"]["x"] 
+    model_data_basic = get_model_data(args.model)
+    fov = float(model_data_basic["camera"]["fov"])
+    
+    # --- FIX: Ensure we have a clean integer size for the grid ---
+    target_size = int(model_data_basic["size"]["x"]) 
 
     # --- 1. CONNECT & LOAD MAP ---
     print(f"🔌 Connecting to CARLA at {CARLA_IP}:{CARLA_PORT}...")
@@ -165,10 +296,10 @@ def main():
         print(f"❌ Connection failed: {e}")
         return
 
-    map_data = get_map_data(args.map, (model_data["size"]["x"], model_data["size"]["y"]))
+    map_data = get_map_data(args.map, (model_data_basic["size"]["x"], model_data_basic["size"]["y"]))
     offset_data = map_data["vehicle_data"]["offset"]
     
-    # Load Trajectory for START POSITION calculation only
+    # Load Trajectory for START POSITION
     traj_path = os.path.join("maps", args.map, "trajectory_positions.json")
     if not os.path.exists(traj_path):
         print(f"❌ Trajectory file not found: {traj_path}")
@@ -177,16 +308,11 @@ def main():
         trajectory_points = json.load(f)
     print(f"📂 Loaded {len(trajectory_points)} points for start pos calculation.")
 
-    # NOTE: NO WORLD GENERATION HERE!
-    # world = generate_world_map(client, map_data["xodr_data"]) 
-    
     rotation_matrix = get_rotation_matrix(ROTATION_DEGREES)
     translation_vector = get_translation_vector(map_data["xodr_data"], offset_data)
     
-    # Calculate Start Position from 1st Trajectory Point
     first_pt = trajectory_points[0]["transform"]
     raw_loc = [first_pt["location"]["x"], first_pt["location"]["y"], first_pt["location"]["z"]]
-    
     start_loc_mapped = get_transform_position(raw_loc, translation_vector, rotation_matrix)
     start_yaw_mapped = (first_pt["rotation"]["yaw"] + ROTATION_DEGREES) % 360
     
@@ -195,10 +321,10 @@ def main():
         carla.Rotation(pitch=0, yaw=start_yaw_mapped, roll=0)
     )
 
-    update_synchronous_mode(world, tm, True, model_data["camera"]["fps"])
+    update_synchronous_mode(world, tm, True, model_data_basic["camera"]["fps"])
     world.tick()
 
-    # --- 4. SPAWN HERO ---
+    # --- 2. SPAWN HERO ---
     print("🛠️ Spawning Hero...")
     all_vehicles = world.get_actors().filter('vehicle.*')
     hero_vehicle = None
@@ -215,23 +341,20 @@ def main():
         vehicle_bp = blueprint_library.find(HERO_VEHICLE_TYPE)
         hero_vehicle = world.spawn_actor(vehicle_bp, start_transform)
 
-    # DAVE-2 NEEDS PHYSICS
     hero_vehicle.set_simulate_physics(True) 
     hero_vehicle.set_autopilot(False)
-    
     cleanup_old_sensors(hero_vehicle)
 
-    # --- 5. SENSORS (EXACTLY LIKE SCRIPT A) ---
-    cam_config = model_data["camera"]
-    # Uses exact logic from Script A: position from config
+    # --- 3. SENSORS (FIXED 800x503) ---
+    cam_config = model_data_basic["camera"]
     sensor_tf = carla.Transform(
         carla.Location(x=cam_config["position"]["x"], y=cam_config["position"]["y"], z=cam_config["position"]["z"]),
         carla.Rotation(pitch=cam_config.get("pitch", 0.0))
     )
 
+    fov_str = str(fov)
     blueprint_library = world.get_blueprint_library()
     
-    # EXACT COPY OF SENSOR SETUP FROM SCRIPT A
     rgb_bp = get_sensor_blueprint(blueprint_library, 'sensor.camera.rgb', IM_WIDTH, IM_HEIGHT, fov_str)
     sem_bp = get_sensor_blueprint(blueprint_library, 'sensor.camera.semantic_segmentation', IM_WIDTH, IM_HEIGHT, fov_str)
     inst_bp = get_sensor_blueprint(blueprint_library, 'sensor.camera.instance_segmentation', IM_WIDTH, IM_HEIGHT, fov_str)
@@ -246,24 +369,40 @@ def main():
 
     world.tick()
 
-    # --- 6. MODEL SETUP ---
-    pygame_screen, pygame_clock = setup_pygame(target_size, target_size, args.only_carla)
+    # --- 4. MODEL LOADING (GEN-AI) ---
+    # --- FIX: BYPASS 'setup_pygame' entirely. Manually set mode to avoid auto-scaling ---
+    win_w = target_size * 2
+    win_h = target_size * 2
+    print(f"🖥️  Initializing Manual Pygame Window: {win_w} x {win_h} (Square Grid)")
+
+    # REPLACED SETUP:
+    pygame.init()
+    pygame.display.set_caption("DAVE-2 Gen-AI | 2x2 Grid")
+    pygame_screen = pygame.display.set_mode((win_w, win_h))
+    pygame_clock = pygame.time.Clock()
+
     spectator = world.get_spectator()
     
     pipe = None
     yolo_model = None
-    prev_image = map_data["starting_image"]
+    prev_image = None # For Temporal Consistency
+    model_data_gen = None
 
     if args.only_carla:
         print("ℹ️  Running in ONLY_CARLA mode. Stable Diffusion and YOLO disabled.")
     else:
-        check_path = os.path.join(current_dir, MODEL_FOLDER_NAME, args.model)
-        if not os.path.exists(check_path):
-            print(f"⚠️  WARNING: Model folder not found at: {check_path}")
+        # 1. Download/Cache Models (Using repo from Colab script)
+        MODEL_REPO_ID = "jannu99/gurickestraemp4_25_12_02_model" 
+        LOCAL_MODEL_DIR = os.path.join(current_dir, "gurickestraemp4_25_12_02_local") 
         
-        pipe = load_stable_diffusion_pipeline(args.model, model_data)
+        model_root = download_models_and_config(MODEL_REPO_ID, LOCAL_MODEL_DIR, hf_token)
+        
+        # 2. Load Pipeline
+        pipe, model_data_gen = load_pipeline_models(model_root, DEVICE)
+        
+        # 3. Load YOLO
         yolo_model = load_yolo_model()
-        print("✅ Generative Pipeline Loaded.")
+        print("✅ Generative Pipeline & YOLO Loaded.")
 
     dave2_conn = connect_to_dave2_server()
 
@@ -278,11 +417,11 @@ def main():
     
     save_arguments(args, output_dir)
     
-    # --- 7. DAVE-2 CONTROL LOOP ---
+    # --- 5. DRIVING LOOP ---
     print(f"🚀 Starting DAVE-2 Control Loop...")
     
     frame = world.tick()
-    kill_frame = frame + (args.seconds * model_data["camera"]["fps"])
+    kill_frame = frame + (args.seconds * model_data_basic["camera"]["fps"])
 
     try:
         while True:
@@ -300,13 +439,13 @@ def main():
                 print(f"⚠️ Timeout waiting for sensor data at frame {frame}.")
                 continue
 
-            # B. PROCESS SENSOR DATA
+            # B. PROCESS SENSOR DATA (PIL)
             # 1. RGB
             rgb_image_np = np.frombuffer(rgb_data.raw_data, dtype=np.uint8).reshape((rgb_data.height, rgb_data.width, 4))[:,:,:3][:,:,::-1]
             rgb_image_pil = Image.fromarray(rgb_image_np)
             
-            # 2. Instance
-            instance_pil = process_instance_map_fixed(inst_data, rgb_image_np)
+            # 2. Instance (UPDATED TO NEW LOGIC)
+            instance_pil = process_instance_map_fixed(inst_data)
 
             # 3. Semantic
             seg_data.convert(carla.ColorConverter.CityScapesPalette) 
@@ -317,36 +456,62 @@ def main():
             depth_image_np = cv2.filter2D(np.array(carla_image_to_pil(depth_data)),-1,np.ones((3,3),np.float32)/10)
             depth_image_pil = ImageOps.invert(Image.fromarray(depth_image_np))
             
-            # C. **SIMPLE RESIZE ONLY** (MATCHING SCRIPT A EXACTLY)
-            # No calibration, no pinhole math, just resize to model target.
+            # C. **SIMPLE RESIZE ONLY**
             final_rgb = rgb_image_pil.resize((target_size, target_size), resample=Image.Resampling.LANCZOS)
             final_seg = seg_image.resize((target_size, target_size), resample=Image.Resampling.NEAREST)
             final_inst = instance_pil.resize((target_size, target_size), resample=Image.Resampling.NEAREST)
             final_depth = depth_image_pil.resize((target_size, target_size), resample=Image.Resampling.BILINEAR)
 
-            # D. PREPARE STEERING IMAGE
+            # D. PREPARE IMAGE FOR DAVE-2
             steering_image = None
             generated_image = None 
+            image_to_show_top_right = None
             
             if args.only_carla:
                 # ---------------- ONLY CARLA MODE ----------------
                 steering_image = final_rgb
                 generated_image = final_rgb 
-                display_image = final_rgb
+                image_to_show_top_right = final_rgb # Top Right shows RGB
             else:
                 # ---------------- GEN-AI MODE ----------------
-                generated_image = generate_image(pipe, final_seg, model_data, prev_image, split = 30, guidance = 3.5, set_seed = True, rotate = False)
-                prev_image = generated_image
+                # Uses the REALTIME function with OPTIMIZED parameters
+                generated_image = generate_image_realtime(
+                    pipe, 
+                    seg_image=final_seg, 
+                    inst_image=final_inst, 
+                    model_data=model_data_gen, 
+                    prev_image=prev_image,
+                    guidance=3.0
+                )
+                
+                prev_image = generated_image # Update temporal buffer
                 steering_image = generated_image
+                
                 _, yolo_image = calculate_yolo_image(yolo_model, generated_image)
-                display_image = combine_images(final_rgb, yolo_image)
+                image_to_show_top_right = yolo_image # Top Right shows Gen+YOLO
             
-            # E. SEND TO DAVE-2
+            # E. DAVE-2 INFERENCE
             steering, throttle = send_image_over_connection(dave2_conn, steering_image)
-            
-            print(f"Frame: {frame}, Steering: {steering:.4f}, Throttle: {throttle:.4f}")
+            print(f"Frame: {frame}, Steer: {steering:.4f}, Throt: {throttle:.4f}")
 
-            # F. APPLY CONTROL
+            # --- [UPDATED] F. DISPLAY (2x2 GRID) ---
+            # 1. Create a blank canvas (Square: Width x 2, Height x 2)
+            display_image = Image.new('RGB', (win_w, win_h))
+
+            # 2. Paste images into the quadrants
+            # Top-Left: Original RGB
+            display_image.paste(final_rgb, (0, 0))
+            
+            # Top-Right: Generated (with YOLO boxes) OR RGB (if only_carla)
+            display_image.paste(image_to_show_top_right, (target_size, 0))
+            
+            # Bottom-Left: Semantic Segmentation
+            display_image.paste(final_seg, (0, target_size))
+            
+            # Bottom-Right: Instance Segmentation
+            display_image.paste(final_inst, (target_size, target_size))
+
+            # G. CONTROL
             ackermann_control = carla.VehicleAckermannControl()
             ackermann_control.speed = float(12 / 3.6) 
             ackermann_control.steer = float(steering * -1.0)
@@ -355,11 +520,11 @@ def main():
             ackermann_control.jerk = 0.0
             hero_vehicle.apply_ackermann_control(ackermann_control)
 
-            # G. SAVE DATA
+            # H. SAVE
             if not args.no_save:
                 save_data(frame, output_dir, final_rgb, final_seg, final_inst, final_depth, generated_image)
 
-            # H. DISPLAY
+            # I. DISPLAY ON SCREEN
             show_image(pygame_screen, display_image)
             
             pygame_clock.tick(30)
